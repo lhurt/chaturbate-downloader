@@ -2,12 +2,17 @@ import asyncio
 import sys
 from pathlib import Path
 
+import httpx
+import m3u8
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as webapp
+import downloader.converter as converter_module
+import downloader.hls as hls_module
+from downloader.hls import DownloadProgress, HLSDownloader
 from downloader.manager import DownloadManager
 
 
@@ -109,6 +114,361 @@ def test_redact_text_urls_handles_absolute_and_relative_query_tokens():
     assert "secret" not in redacted
     assert "https://cdn.example/playlist.m3u8?…" in redacted
     assert "segment.m4s?…" in redacted
+
+
+def test_hls_redaction_helpers_strip_tokens_from_urls_and_text():
+    url = "https://cdn.example/path/seg.m4s?token=secret#frag"
+    text = f"fetching {url} relative.m4s?verify=hidden"
+
+    assert hls_module._redact_url(url) == "https://cdn.example/path/seg.m4s?…"
+    redacted = hls_module._redact_text_urls(text)
+    assert "secret" not in redacted
+    assert "hidden" not in redacted
+    assert "https://cdn.example/path/seg.m4s?…" in redacted
+
+
+def test_completed_file_username_parsing_preserves_usernames_containing_20(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2020_fan_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.get("/api/downloads/list")
+
+    assert response.status_code == 200
+    assert response.json()[0]["username"] == "alice_2020_fan"
+
+
+def test_download_progress_has_non_error_warning_channel():
+    progress = DownloadProgress(username="alice", warning_message="Solo video")
+
+    data = progress.to_dict()
+
+    assert data["warning_message"] == "Solo video"
+    assert data["error_message"] == ""
+
+
+def test_finalize_partial_audio_uses_warning_not_error(tmp_path):
+    async def scenario():
+        downloader = HLSDownloader(output_dir=tmp_path)
+        video_file = tmp_path / "alice_video.mp4"
+        audio_file = tmp_path / "alice_audio.mp4"
+        video_file.write_bytes(b"video")
+        audio_file.write_bytes(b"partial audio")
+        progress = DownloadProgress(username="alice")
+
+        result = await downloader._finalize(
+            progress,
+            "alice",
+            "alice_2026-04-27_10-00-00",
+            video_file,
+            audio_file,
+            audio_ok=False,
+        )
+
+        assert result.status == "done"
+        assert result.error_message == ""
+        assert result.warning_message == "Solo video (audio incompleto)"
+        assert Path(result.output_path).read_bytes() == b"video"
+        assert not audio_file.exists()
+
+    asyncio.run(scenario())
+
+
+def test_startup_barrier_waits_for_two_real_parties():
+    async def scenario():
+        barrier = hls_module._StartupBarrier(2)
+        released = False
+
+        async def first_party():
+            nonlocal released
+            await barrier.arrive_and_wait()
+            released = True
+
+        task = asyncio.create_task(first_party())
+        await asyncio.sleep(0)
+        assert not released
+        await barrier.arrive_and_wait()
+        await asyncio.wait_for(task, timeout=1)
+        assert released
+
+    asyncio.run(scenario())
+
+
+def test_failed_segment_is_not_marked_downloaded_before_success(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(hls_module, "MAX_EMPTY_POLLS", 1)
+
+        class FakeDownloader(HLSDownloader):
+            def __init__(self):
+                super().__init__(output_dir=tmp_path)
+                self.fetches = 0
+
+            async def _fetch_media_playlist(self, client, url, _depth=0):
+                return m3u8.loads(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n"
+                    "#EXTINF:1.0,\nseg.m4s?token=old\n"
+                )
+
+            async def _fetch_segment_with_retry(self, *args, **kwargs):
+                self.fetches += 1
+                if self.fetches == 1:
+                    return None
+                return b"segment"
+
+        downloader = FakeDownloader()
+        progress = DownloadProgress(username="alice")
+
+        ok = await downloader._download_track(
+            object(),
+            asyncio.Event(),
+            "https://cdn.example/live/playlist.m3u8?token=old",
+            tmp_path / "track.mp4",
+            "alice",
+            "video",
+            progress,
+            max_duration=None,
+        )
+
+        assert ok is True
+        assert downloader.fetches == 2
+        assert progress.failed_segments == 1
+        assert progress.downloaded_segments == 1
+
+    asyncio.run(scenario())
+
+
+def test_segment_403_refresh_does_not_count_failed_segment(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(hls_module, "MAX_EMPTY_POLLS", 1)
+
+        class FakeDownloader(HLSDownloader):
+            def __init__(self):
+                super().__init__(output_dir=tmp_path)
+                self.fetches = 0
+                self.refreshes = 0
+
+            async def _fetch_media_playlist(self, client, url, _depth=0):
+                token = "new" if "new" in url else "old"
+                return m3u8.loads(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n"
+                    f"#EXTINF:1.0,\nseg.m4s?token={token}\n"
+                )
+
+            async def _resolve_master(self, client, master_url):
+                return "https://cdn.example/live/playlist.m3u8?token=new", None
+
+            async def _refresh_url(self, username):
+                self.refreshes += 1
+                return "https://example.invalid/master.m3u8?token=new"
+
+            async def _fetch_segment_with_retry(self, client, semaphore, url, **kwargs):
+                self.fetches += 1
+                if self.fetches == 1:
+                    request = httpx.Request("GET", url)
+                    response = httpx.Response(403, request=request)
+                    raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+                return b"segment"
+
+        downloader = FakeDownloader()
+        progress = DownloadProgress(username="alice")
+
+        ok = await downloader._download_track(
+            object(),
+            asyncio.Event(),
+            "https://cdn.example/live/playlist.m3u8?token=old",
+            tmp_path / "track.mp4",
+            "alice",
+            "video",
+            progress,
+            max_duration=None,
+        )
+
+        assert ok is True
+        assert downloader.refreshes == 1
+        assert progress.failed_segments == 0
+        assert progress.downloaded_segments == 1
+        assert progress.total_segments == 1
+
+    asyncio.run(scenario())
+
+
+def test_mid_batch_segment_403_keeps_progress_totals_consistent(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(hls_module, "MAX_EMPTY_POLLS", 1)
+
+        class FakeDownloader(HLSDownloader):
+            def __init__(self):
+                super().__init__(output_dir=tmp_path)
+                self.refreshes = 0
+
+            async def _fetch_media_playlist(self, client, url, _depth=0):
+                token = "new" if "new" in url else "old"
+                return m3u8.loads(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n"
+                    f"#EXTINF:1.0,\nseg-0.m4s?token={token}\n"
+                    f"#EXTINF:1.0,\nseg-1.m4s?token={token}\n"
+                )
+
+            async def _resolve_master(self, client, master_url):
+                return "https://cdn.example/live/playlist.m3u8?token=new", None
+
+            async def _refresh_url(self, username):
+                self.refreshes += 1
+                return "https://example.invalid/master.m3u8?token=new"
+
+            async def _fetch_segment_with_retry(self, client, semaphore, url, **kwargs):
+                if "seg-1" in url and "token=old" in url:
+                    request = httpx.Request("GET", url)
+                    response = httpx.Response(403, request=request)
+                    raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+                if "seg-0" in url:
+                    return b"zero"
+                return b"one"
+
+        downloader = FakeDownloader()
+        progress = DownloadProgress(username="alice")
+        output_file = tmp_path / "track.mp4"
+
+        ok = await downloader._download_track(
+            object(),
+            asyncio.Event(),
+            "https://cdn.example/live/playlist.m3u8?token=old",
+            output_file,
+            "alice",
+            "video",
+            progress,
+            max_duration=None,
+        )
+
+        assert ok is True
+        assert downloader.refreshes == 1
+        assert progress.failed_segments == 0
+        assert progress.downloaded_segments == 2
+        assert progress.total_segments == 2
+        assert output_file.read_bytes() == b"zeroone"
+
+    asyncio.run(scenario())
+
+
+def test_refresh_overlap_dedupe_uses_token_insensitive_identity():
+    old_url = "https://cdn.example/live/seg-1.m4s?token=old"
+    new_url = "https://cdn.example/live/seg-1.m4s?token=new"
+
+    assert hls_module._segment_identity(old_url) == hls_module._segment_identity(new_url)
+
+
+def test_async_mux_cancellation_terminates_ffmpeg(monkeypatch, tmp_path):
+    async def scenario():
+        monkeypatch.setattr(converter_module, "_ffmpeg_available", lambda: True)
+        monkeypatch.setattr(converter_module, "_probe_start_time", lambda _path: None)
+        monkeypatch.setattr(converter_module, "_probe_duration", lambda _path: None)
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+                self.killed = False
+                self._done = asyncio.Event()
+
+            async def communicate(self):
+                await self._done.wait()
+                self.returncode = 0
+                return b"", b""
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+                self._done.set()
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+                self._done.set()
+
+            async def wait(self):
+                await self._done.wait()
+                return self.returncode
+
+        process = FakeProcess()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+        task = asyncio.create_task(
+            converter_module.mux_video_audio_async(
+                str(tmp_path / "video.mp4"),
+                str(tmp_path / "audio.mp4"),
+                str(tmp_path / "out.mp4"),
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("mux task should have been cancelled")
+
+        assert process.terminated is True
+        assert process.killed is False
+
+    asyncio.run(scenario())
+
+
+def test_async_mux_timeout_terminates_ffmpeg(monkeypatch, tmp_path):
+    async def scenario():
+        monkeypatch.setattr(converter_module, "_ffmpeg_available", lambda: True)
+        monkeypatch.setattr(converter_module, "_probe_start_time", lambda _path: None)
+        monkeypatch.setattr(converter_module, "_probe_duration", lambda _path: None)
+        monkeypatch.setattr(converter_module, "FFMPEG_MUX_TIMEOUT", 0.01)
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+                self.killed = False
+                self._done = asyncio.Event()
+
+            async def communicate(self):
+                await asyncio.Event().wait()
+                return b"", b""
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+                self._done.set()
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+                self._done.set()
+
+            async def wait(self):
+                await self._done.wait()
+                return self.returncode
+
+        process = FakeProcess()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+        success = await converter_module.mux_video_audio_async(
+            str(tmp_path / "video.mp4"),
+            str(tmp_path / "audio.mp4"),
+            str(tmp_path / "out.mp4"),
+        )
+
+        assert success is False
+        assert process.terminated is True
+        assert process.killed is False
+
+    asyncio.run(scenario())
 
 
 def test_stop_during_start_reservation_prevents_untracked_task(monkeypatch, tmp_path):

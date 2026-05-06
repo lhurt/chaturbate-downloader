@@ -36,6 +36,9 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 manager = DownloadManager(output_dir=DOWNLOADS_DIR)
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
+COMPLETED_STEM_RE = re.compile(
+    r"^(?P<username>.+)_(?P<timestamp>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$"
+)
 
 ALLOWED_ORIGIN_SET = {
     origin.strip().rstrip("/")
@@ -71,6 +74,14 @@ def _is_completed_media_file(path: Path) -> bool:
         and path.suffix == ".mp4"
         and not path.stem.endswith(("_video", "_audio"))
     )
+
+
+def _username_from_completed_stem(stem: str) -> str:
+    """Extract username only when the final suffix is the exact timestamp format."""
+    match = COMPLETED_STEM_RE.match(stem)
+    if not match:
+        return stem
+    return match.group("username")
 
 
 def _redact_url(url: Optional[str]) -> Optional[str]:
@@ -247,7 +258,7 @@ async def list_downloaded_files():
     for f in DOWNLOADS_DIR.iterdir():
         if _is_completed_media_file(f):
             stem = f.stem
-            username = stem.rsplit("_20", 1)[0] if "_20" in stem else stem
+            username = _username_from_completed_stem(stem)
             st = f.stat()
             files.append(
                 {
@@ -295,7 +306,7 @@ async def debug_extract(username: str):
     finally:
         logging.getLogger("downloader").removeHandler(handler)
 
-    logs = log_capture.getvalue()
+    logs = _redact_text_urls(log_capture.getvalue())
 
     return {
         "username": username,
@@ -331,7 +342,7 @@ async def debug_playlist(username: str):
             return {
                 "username": username,
                 "error": "No HLS URL found",
-                "logs": log_capture.getvalue(),
+                "logs": _redact_text_urls(log_capture.getvalue()),
             }
 
         async with httpx.AsyncClient(
@@ -414,7 +425,7 @@ async def debug_playlist(username: str):
                 result["no_segments_found"] = True
                 result["raw_parse_check"] = "#EXTINF" in master_body
 
-        result["logs"] = log_capture.getvalue()
+        result["logs"] = _redact_text_urls(log_capture.getvalue())
         return result
     finally:
         logging.getLogger("downloader").removeHandler(handler)

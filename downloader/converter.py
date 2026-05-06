@@ -4,12 +4,27 @@ Converts and muxes media files using ffmpeg.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import subprocess
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+FFMPEG_MUX_TIMEOUT = 600.0
+FFMPEG_TERMINATE_TIMEOUT = 5.0
+
+
+async def _terminate_process(process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=FFMPEG_TERMINATE_TIMEOUT)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
 
 
 def _ffmpeg_available() -> bool:
@@ -202,3 +217,88 @@ def mux_video_audio(
     except Exception as exc:
         logger.error("Mux error: %s", exc)
         return False
+
+
+async def mux_video_audio_async(
+    video_file: str,
+    audio_file: str,
+    output_file: str,
+) -> bool:
+    """Cancellable async mux that terminates ffmpeg on task cancellation."""
+    if not _ffmpeg_available():
+        logger.error("ffmpeg not found in PATH. Cannot mux.")
+        return False
+
+    video_start = _probe_start_time(video_file)
+    audio_start = _probe_start_time(audio_file)
+    if video_start is not None and audio_start is not None:
+        logger.info(
+            "Input start_times: video=%.3fs, audio=%.3fs, delta=%.3fs",
+            video_start,
+            audio_start,
+            audio_start - video_start,
+        )
+
+    vid_dur = _probe_duration(video_file)
+    aud_dur = _probe_duration(audio_file)
+    if vid_dur is not None and aud_dur is not None:
+        delta = abs(vid_dur - aud_dur)
+        logger.info(
+            "Track durations: video=%.1fs, audio=%.1fs, delta=%.1fs",
+            vid_dur,
+            aud_dur,
+            delta,
+        )
+        if delta > 2.0:
+            logger.warning(
+                "Duration mismatch >2s — one track lost more segments than the other",
+            )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_file,
+        "-i",
+        audio_file,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c",
+        "copy",
+        "-copyts",
+        "-start_at_zero",
+        "-fflags",
+        "+genpts",
+        "-avoid_negative_ts",
+        "make_zero",
+        "-movflags",
+        "+faststart",
+        output_file,
+    ]
+
+    logger.info("Muxing video + audio -> %s", output_file)
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=FFMPEG_MUX_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        await _terminate_process(process)
+        logger.error("ffmpeg mux timed out")
+        return False
+    except asyncio.CancelledError:
+        await _terminate_process(process)
+        raise
+
+    if process.returncode == 0:
+        logger.info("Mux successful: %s", output_file)
+        return True
+    logger.error("ffmpeg mux failed: %s", stderr.decode(errors="replace")[-500:])
+    return False

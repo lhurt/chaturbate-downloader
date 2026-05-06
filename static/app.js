@@ -217,7 +217,7 @@
       setServerOnline(true);
 
       const allDownloads = Array.isArray(data) ? data : [];
-      const visible = allDownloads.filter(d => d.active || d.error_message || d.status === 'error' || d.elapsed_seconds < 30);
+      const visible = allDownloads.filter(d => d.active || d.error_message || d.warning_message || d.status === 'error' || d.elapsed_seconds < 30);
       const actives = allDownloads.filter(d => d.active);
       renderActiveDownloads(visible.length > 0 ? visible : actives, actives.length);
 
@@ -303,6 +303,7 @@
     if (d.active === true) return true;
     if (d.error_message) return false;
     if (d.status === 'done' || d.status === 'error') return false;
+    if (d.warning_message && !d.active) return false;
     return d.is_live === true || d.status === 'converting' || d.status === 'starting';
   }
 
@@ -412,6 +413,9 @@
       ${d.error_message ? `
       <div class="download-card__error" data-field="error">[ERROR] ${escapeHtml(d.error_message)}</div>
       ` : ''}
+      ${d.warning_message ? `
+      <div class="download-card__warning" data-field="warning">[WARN] ${escapeHtml(d.warning_message)}</div>
+      ` : ''}
     `;
 
     card.querySelector('.btn-stop')?.addEventListener('click', (e) => {
@@ -457,6 +461,19 @@
       errorEl.textContent = '[ERROR] ' + d.error_message;
     } else if (errorEl) {
       errorEl.remove();
+    }
+
+    let warningEl = card.querySelector('[data-field="warning"]');
+    if (d.warning_message) {
+      if (!warningEl) {
+        warningEl = document.createElement('div');
+        warningEl.className = 'download-card__warning';
+        warningEl.dataset.field = 'warning';
+        card.appendChild(warningEl);
+      }
+      warningEl.textContent = '[WARN] ' + d.warning_message;
+    } else if (warningEl) {
+      warningEl.remove();
     }
   }
 

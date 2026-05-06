@@ -742,6 +742,18 @@ select option {
   word-break: break-word;
 }
 
+/* Warning in card */
+.download-card__warning {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--warning);
+  word-break: break-word;
+}
+
 /* --- Empty States --- */
 .empty-state {
   padding: var(--space-2xl) var(--space-lg);
