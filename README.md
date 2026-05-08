@@ -13,6 +13,13 @@ This project is intended for personal, local use only.
 ## Features
 
 - **Web UI** — start, monitor, and stop downloads from the browser.
+- **Tracked streamers dashboard** — keeps a SQLite-backed registry of every
+  username you've downloaded. The server polls room status every 60 seconds
+  and shows live thumbnails, online/offline state, and quick download or
+  delete actions.
+- **Clickable profile links** — every tracked card links the thumbnail and
+  username directly to `https://chaturbate.com/<username>/`.
+- **Theme controls** — switch between Light, Auto, and Dark modes.
 - **Multiple concurrent downloads** — each stream runs in its own task under
   a central `DownloadManager`.
 - **Robust URL extraction** — four fallback strategies (`chatvideocontext`
@@ -140,13 +147,18 @@ HOST=0.0.0.0 PORT=9000 uv run python app.py
 
 ## Web UI
 
-The main page (`templates/index.html`) shows three sections:
+The main page (`templates/index.html`) shows four sections:
 
 1. **New Download** — enter a username and optionally set a max duration in
    minutes. Output is MP4.
-2. **Active Downloads** — live progress cards (segments, speed, elapsed
+2. **Tracked Streamers** — a dashboard of every username you've ever
+   downloaded. Cards show the latest thumbnail, live/offline/private status,
+   last-seen time, and per-card download or delete actions. Thumbnails and
+   names link to the room's Chaturbate profile in a new tab. The list is
+   refreshed automatically every 30 seconds.
+3. **Active Downloads** — live progress cards (segments, speed, elapsed
    time, status) with per-download stop and a global "Stop All" button.
-3. **Completed Downloads** — list of finished files with download and
+4. **Completed Downloads** — list of finished files with download and
    delete actions.
 
 Downloads land in `./downloads/<username>_<YYYY-MM-DD_HH-MM-SS>.mp4`.
@@ -176,6 +188,14 @@ All endpoints are under the FastAPI app at `/`.
 | GET    | `/api/downloads/file/{filename}`  | Stream one exact completed file by filename |
 | DELETE | `/api/downloads/{filename}`       | Delete a completed file (path-traversal safe) |
 
+### Tracked Streamers
+
+| Method | Path                               | Description                                    |
+| ------ | ---------------------------------- | ---------------------------------------------- |
+| GET    | `/api/tracked`                     | List all tracked streamers with status, last-seen times, and active-download flags |
+| DELETE | `/api/tracked/{username}`          | Remove a username from the tracked registry    |
+| GET    | `/api/thumbnail/{username}`        | Fetch the current room thumbnail (cached for 30 seconds) |
+
 ### Debug
 
 | Method | Path                              | Description                                                |
@@ -196,17 +216,21 @@ and origins outside `CORS_ORIGINS`. Keep `CORS_ORIGINS` in sync if you change
 
 ```
 chaturbate/
-├── app.py                 # FastAPI app, routes, validation, lifespan
+├── app.py                 # FastAPI app, routes, validation, lifespan, background poller
 ├── downloader/
 │   ├── __init__.py        # Public exports
 │   ├── extractor.py       # 4 strategies to pull a fresh HLS URL
 │   ├── hls.py             # LL-HLS downloader (video + audio, token refresh)
 │   ├── converter.py       # ffmpeg remux + video/audio mux with A/V sync
-│   └── manager.py         # DownloadManager: tasks, state, lifecycle
+│   ├── manager.py         # DownloadManager: tasks, state, lifecycle
+│   └── tracker.py         # SQLite-backed registry of tracked streamers
 ├── templates/
 │   └── index.html         # Single-page UI
 ├── static/
 │   ├── app.js             # Frontend logic (polling, forms, file list)
+│   ├── tracked.js         # Tracked-streamer dashboard (cards, thumbnails, status)
+│   ├── tracked.css        # Styles for the tracked streamers section
+│   ├── theme.js           # Light / Auto / Dark theme controls
 │   └── style.css
 ├── tests/
 │   └── test_backend.py    # Backend safety/regression tests
@@ -233,10 +257,15 @@ chaturbate/
 - **Graceful stop.** `stop_download` sets an event instead of cancelling
   the task, so the current segment batch finishes and the mux runs before
   the task exits. There's a 120 s watchdog if the task hangs.
+- **Tracked streamer data** lives in `downloads/tracked.db` (or the
+  directory pointed to by `DOWNLOADS_DIR`). It stores usernames, download
+  counts, last-seen timestamps, and the most recent room status captured by
+  the background poller.
 - **Local-only security model.** The server is intended for local use. It
-  rejects obvious browser cross-site writes, but it is not a full
-  authentication layer. Do not expose it to the public internet. The default
-  `HOST` is `127.0.0.1` for this reason.
+  rejects obvious browser cross-site writes via `Sec-Fetch-Site` and origin
+  checks on state-changing endpoints, but it does not provide authentication.
+  Do not expose it to the public internet. The default `HOST` is `127.0.0.1`
+  for this reason.
 
 ---
 
@@ -247,7 +276,8 @@ uv run pytest
 ```
 
 The current tests cover validation, path/file safety, completed-file listing,
-origin checks, URL redaction, and download-manager start/stop race regressions.
+tracked streamer APIs, origin checks, URL redaction, download-manager
+start/stop race regressions, and ffmpeg mux cancellation / timeout behavior.
 
 ---
 

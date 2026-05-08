@@ -383,7 +383,9 @@
             </span>
           </div>
         </div>
-        ${d.active ? `<button class="btn btn--destructive btn--sm btn-stop" data-username="${escapeHtml(d.username)}" aria-label="Stop download for ${escapeHtml(d.username)}">Stop</button>` : `<span class="tag tag--muted">${escapeHtml(String(d.status || 'recent').toUpperCase())}</span>`}
+        <div class="download-card__actions">
+          ${d.active ? `<button class="btn btn--destructive btn--sm btn-stop" data-username="${escapeHtml(d.username)}" aria-label="Stop download for ${escapeHtml(d.username)}">Stop</button>` : `<span class="tag tag--muted">${escapeHtml(String(d.status || 'recent').toUpperCase())}</span>`}
+        </div>
       </div>
       ${statusStripMarkup(d)}
       <div class="download-card__stats">
@@ -436,11 +438,20 @@
     setFieldText(card, 'segments', `${d.downloaded_segments || 0}/${d.total_segments || 0}`);
 
     const header = card.querySelector('.download-card__header');
-    const action = header?.querySelector('.btn-stop, .tag--muted');
+    let actionsContainer = header?.querySelector('.download-card__actions');
+    const action = (actionsContainer || header)?.querySelector('.btn-stop, .tag--muted');
     if (header && ((d.active && !action?.classList.contains('btn-stop')) || (!d.active && !action?.classList.contains('tag--muted')))) {
       action?.remove();
-      header.insertAdjacentHTML('beforeend', d.active ? `<button class="btn btn--destructive btn--sm btn-stop" data-username="${escapeHtml(d.username)}" aria-label="Stop download for ${escapeHtml(d.username)}">Stop</button>` : `<span class="tag tag--muted">${escapeHtml(String(d.status || 'recent').toUpperCase())}</span>`);
-      header.querySelector('.btn-stop')?.addEventListener('click', (e) => stopDownload(e.currentTarget.dataset.username));
+      const newHtml = d.active
+        ? `<button class="btn btn--destructive btn--sm btn-stop" data-username="${escapeHtml(d.username)}" aria-label="Stop download for ${escapeHtml(d.username)}">Stop</button>`
+        : `<span class="tag tag--muted">${escapeHtml(String(d.status || 'recent').toUpperCase())}</span>`;
+      if (!actionsContainer) {
+        header.insertAdjacentHTML('beforeend', `<div class="download-card__actions">${newHtml}</div>`);
+        actionsContainer = header.querySelector('.download-card__actions');
+      } else {
+        actionsContainer.insertAdjacentHTML('beforeend', newHtml);
+      }
+      actionsContainer.querySelector('.btn-stop')?.addEventListener('click', (e) => stopDownload(e.currentTarget.dataset.username));
     }
 
     const liveBadge = card.querySelector('.download-card__live-badge');

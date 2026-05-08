@@ -8,17 +8,21 @@ import asyncio
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from downloader import DownloadManager
+from downloader.extractor import fetch_room_status
+from downloader.tracker import Tracker
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +38,9 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # Global download manager
 manager = DownloadManager(output_dir=DOWNLOADS_DIR)
+tracker = Tracker(DOWNLOADS_DIR / "tracked.db")
+
+POLL_INTERVAL_SECONDS = 60
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 COMPLETED_STEM_RE = re.compile(
@@ -114,14 +121,45 @@ def _require_trusted_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Origin is not allowed")
 
 
+async def _poll_tracked_status() -> None:
+    while True:
+        try:
+            usernames = await tracker.list_usernames()
+            if usernames:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(15.0),
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                ) as client:
+                    for username in usernames:
+                        try:
+                            status = await fetch_room_status(client, username)
+                            await tracker.update_status(username, status)
+                        except Exception as exc:
+                            logger.debug("status poll failed for %s: %s", username, exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("status poller iteration failed: %s", exc)
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup/shutdown."""
     logger.info("Starting Chaturbate Downloader")
-    yield
-    # Shutdown: stop all downloads
-    await manager.stop_all()
-    logger.info("Shutting down")
+    poll_task = asyncio.create_task(_poll_tracked_status())
+    try:
+        yield
+    finally:
+        poll_task.cancel()
+        try:
+            await poll_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        await manager.stop_all()
+        tracker.close()
+        logger.info("Shutting down")
 
 
 app = FastAPI(title="Chaturbate Stream Downloader", lifespan=lifespan)
@@ -173,6 +211,7 @@ async def start_download(
     )
     if "error" in result:
         raise HTTPException(status_code=409, detail=result["error"])
+    await tracker.upsert_download(username)
     return result
 
 
@@ -281,6 +320,74 @@ async def delete_file(request: Request, filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     file_path.unlink()
     return {"status": "deleted", "filename": filename}
+
+
+# ─── Tracked Streamers ────────────────────────────────────
+
+
+_THUMB_URL = "https://thumb.live.mmcdn.com/riw/{username}.jpg"
+_THUMB_TTL_SECONDS = 30
+_thumb_cache: dict[str, tuple[float, bytes, str]] = {}
+_thumb_lock = asyncio.Lock()
+
+
+@app.get("/api/tracked")
+async def list_tracked():
+    rows = await tracker.list_all()
+    active = manager.get_status()
+    if isinstance(active, dict) and isinstance(active.get("downloads"), list):
+        active_users = {item.get("username") for item in active["downloads"] if item.get("active")}
+    elif isinstance(active, list):
+        active_users = {item.get("username") for item in active if item.get("active")}
+    else:
+        active_users = set()
+    for row in rows:
+        row["downloading"] = row["username"] in active_users
+    return {"tracked": rows, "polled_every_seconds": POLL_INTERVAL_SECONDS}
+
+
+@app.delete("/api/tracked/{username}")
+async def delete_tracked(request: Request, username: str):
+    _require_trusted_origin(request)
+    username = _validate_username(username)
+    removed = await tracker.delete(username)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Username not tracked")
+    return {"status": "deleted", "username": username}
+
+
+@app.get("/api/thumbnail/{username}")
+async def get_thumbnail(username: str):
+    username = _validate_username(username)
+    cached = _thumb_cache.get(username)
+    if cached and time.time() - cached[0] < _THUMB_TTL_SECONDS:
+        return Response(content=cached[1], media_type=cached[2])
+
+    async with _thumb_lock:
+        cached = _thumb_cache.get(username)
+        if cached and time.time() - cached[0] < _THUMB_TTL_SECONDS:
+            return Response(content=cached[1], media_type=cached[2])
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://chaturbate.com/",
+                },
+            ) as client:
+                resp = await client.get(_THUMB_URL.format(username=username))
+        except Exception as exc:
+            logger.debug("thumbnail fetch failed for %s: %s", username, exc)
+            raise HTTPException(status_code=502, detail="Thumbnail unavailable")
+
+        if resp.status_code != 200 or not resp.content:
+            raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+        media_type = resp.headers.get("content-type", "image/jpeg")
+        _thumb_cache[username] = (time.time(), resp.content, media_type)
+        return Response(content=resp.content, media_type=media_type)
 
 
 # ─── Debug Endpoints ──────────────────────────────────────

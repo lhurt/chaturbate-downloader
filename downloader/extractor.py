@@ -30,6 +30,28 @@ ROOM_URL = f"{BASE_DOMAIN}/{{username}}/"
 CHATVIDEO_API = f"{BASE_DOMAIN}/api/chatvideocontext/{{username}}/"
 EDGE_HLS_API = f"{BASE_DOMAIN}/get_edge_hls_url_ajax/"
 
+
+async def fetch_room_status(
+    client: httpx.AsyncClient, username: str
+) -> Optional[str]:
+    """Return chatvideocontext room_status without reading hls_source.
+
+    Reading hls_source would not itself burn the token (the segment fetch
+    does), but we never touch it here so the polling code path can never
+    accidentally leak a fresh token into logs.
+    """
+    try:
+        resp = await client.get(CHATVIDEO_API.format(username=username))
+        if resp.status_code == 404:
+            return "deleted"
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return data.get("room_status") or None
+    except Exception as exc:
+        logger.debug("fetch_room_status failed for %s: %s", username, exc)
+        return None
+
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

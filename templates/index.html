@@ -7,7 +7,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Doto:wght@400;700&family=Space+Grotesk:wght@300;400;500&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <script>
+  (() => {
+    let stored;
+    let mode = 'auto';
+    try {
+      stored = localStorage.getItem('theme');
+      mode = stored === 'light' || stored === 'dark' ? stored : 'auto';
+    } catch {}
+    document.documentElement.setAttribute('data-theme-mode', mode);
+    if (mode !== 'auto') document.documentElement.setAttribute('data-theme', mode);
+  })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/tracked.css">
 </head>
 <body>
 
@@ -19,6 +32,11 @@
       <div>
         <h1 class="header__title">CB Stream Saver</h1>
         <p class="header__subtitle">HLS Stream Downloader</p>
+      </div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" class="theme-toggle__btn" data-theme-set="light" aria-pressed="false">Light</button>
+        <button type="button" class="theme-toggle__btn" data-theme-set="auto" aria-pressed="false">Auto</button>
+        <button type="button" class="theme-toggle__btn" data-theme-set="dark" aria-pressed="false">Dark</button>
       </div>
       <div class="header__status-group">
         <span class="pulse-dot"></span>
@@ -53,10 +71,24 @@
 
     <section class="section">
       <div class="section__header">
+        <h2 class="section__title">Tracked Streamers</h2>
+        <span class="section__count" id="tracked-count">0</span>
+        <button type="button" class="section__action" id="tracked-refresh">Refresh</button>
+      </div>
+      <div id="tracked-list" class="tracked-grid">
+        <div class="empty-state" id="tracked-empty">
+          <strong>[NO TRACKED STREAMERS]</strong>
+          <span>Streamers you've ever downloaded will appear here with online status and a thumbnail.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section__header">
         <span class="live-dot" id="active-dot"></span>
         <h2 class="section__title">Active Downloads</h2>
         <span class="section__count" id="active-count">0</span>
-        <button class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
+        <button type="button" class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
       </div>
       <div id="active-downloads" class="downloads-grid">
         <div class="empty-state" id="active-empty">
@@ -86,5 +118,7 @@
   </div>
 
   <script src="/static/app.js"></script>
+  <script src="/static/tracked.js"></script>
+  <script src="/static/theme.js"></script>
 </body>
 </html>
