@@ -1,0 +1,12 @@
+.git
+.idea
+.pytest_cache
+.ruff_cache
+.venv
+__pycache__
+*.pyc
+.DS_Store
+.env
+downloads
+dist
+*.egg-info

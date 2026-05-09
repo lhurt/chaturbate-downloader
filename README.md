@@ -143,6 +143,69 @@ Example:
 HOST=0.0.0.0 PORT=9000 uv run python app.py
 ```
 
+### Running with Docker Compose from Docker Hub
+
+The published image is available at
+[sojiroh/cb-stream-saver](https://hub.docker.com/repository/docker/sojiroh/cb-stream-saver).
+
+Create a `.env` file from the example and set `CORS_ORIGINS` to the exact URL
+you will use in the browser:
+
+```bash
+cp .env.example .env
+```
+
+Example `.env` for a NAS on `192.168.1.50`:
+
+```env
+PORT=8000
+CORS_ORIGINS=http://192.168.1.50:8000
+```
+
+Start the service using the Docker Hub compose file:
+
+```bash
+docker compose -f docker-compose.hub.yml up -d
+```
+
+Then open `http://192.168.1.50:8000`, replacing the address with your NAS IP
+or local hostname. Finished MP4 files are stored in the host `./downloads`
+directory through the compose volume.
+
+To update to the latest published image:
+
+```bash
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+### Publishing the Docker image
+
+Log in to Docker Hub first:
+
+```bash
+docker login
+```
+
+Publish the default `latest` tag for `linux/amd64` and `linux/arm64`:
+
+```bash
+./scripts/publish-docker.sh
+```
+
+Publish one or more explicit tags:
+
+```bash
+./scripts/publish-docker.sh latest 1.0.0
+```
+
+The script publishes `sojiroh/cb-stream-saver` by default. Override the image
+name or platforms if needed:
+
+```bash
+IMAGE_NAME=your-user/cb-stream-saver PLATFORMS=linux/amd64 ./scripts/publish-docker.sh latest
+```
+
 ---
 
 ## Web UI

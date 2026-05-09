@@ -1,0 +1,13 @@
+services:
+  cb-stream-saver:
+    image: sojiroh/cb-stream-saver:latest
+    container_name: cb-stream-saver
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+    volumes:
+      - ./downloads:/app/downloads
