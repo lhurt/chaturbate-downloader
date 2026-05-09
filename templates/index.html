@@ -69,34 +69,36 @@
       </form>
     </section>
 
-    <section class="section">
-      <div class="section__header">
-        <h2 class="section__title">Tracked Streamers</h2>
-        <span class="section__count" id="tracked-count">0</span>
-        <button type="button" class="section__action" id="tracked-refresh">Refresh</button>
-      </div>
-      <div id="tracked-list" class="tracked-grid">
-        <div class="empty-state" id="tracked-empty">
-          <strong>[NO TRACKED STREAMERS]</strong>
-          <span>Streamers you've ever downloaded will appear here with online status and a thumbnail.</span>
+    <div class="main-columns">
+      <section class="section">
+        <div class="section__header">
+          <h2 class="section__title">Tracked Streamers</h2>
+          <span class="section__count" id="tracked-count">0</span>
+          <button type="button" class="section__action" id="tracked-refresh">Refresh</button>
         </div>
-      </div>
-    </section>
+        <div id="tracked-list" class="tracked-grid">
+          <div class="empty-state" id="tracked-empty">
+            <strong>[NO TRACKED STREAMERS]</strong>
+            <span>Streamers you've ever downloaded will appear here with online status and a thumbnail.</span>
+          </div>
+        </div>
+      </section>
 
-    <section class="section">
-      <div class="section__header">
-        <span class="live-dot" id="active-dot"></span>
-        <h2 class="section__title">Active Downloads</h2>
-        <span class="section__count" id="active-count">0</span>
-        <button type="button" class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
-      </div>
-      <div id="active-downloads" class="downloads-grid">
-        <div class="empty-state" id="active-empty">
-          <strong>[READY]</strong>
-          <span>Start with a username above. Live recordings show status and activity while capture or conversion is running.</span>
+      <section class="section">
+        <div class="section__header">
+          <span class="live-dot" id="active-dot"></span>
+          <h2 class="section__title">Active Downloads</h2>
+          <span class="section__count" id="active-count">0</span>
+          <button type="button" class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
         </div>
-      </div>
-    </section>
+        <div id="active-downloads" class="downloads-grid">
+          <div class="empty-state" id="active-empty">
+            <strong>[READY]</strong>
+            <span>Start with a username above. Live recordings show status and activity while capture or conversion is running.</span>
+          </div>
+        </div>
+      </section>
+    </div>
 
     <section class="section">
       <div class="section__header">
