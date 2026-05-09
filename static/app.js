@@ -81,7 +81,9 @@
     el._removed = true;
     clearTimeout(el._timer);
     el.classList.add('toast--exit');
-    el.addEventListener('animationend', () => el.remove());
+    const cleanup = () => el.remove();
+    el.addEventListener('animationend', cleanup, { once: true });
+    setTimeout(cleanup, 300);
   }
 
   // --- Utility ---
