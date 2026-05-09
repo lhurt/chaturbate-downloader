@@ -179,32 +179,27 @@ docker compose -f docker-compose.hub.yml pull
 docker compose -f docker-compose.hub.yml up -d
 ```
 
-### Publishing the Docker image
+### Publishing with GitHub Actions
 
-Log in to Docker Hub first:
+The repository includes `.github/workflows/docker-publish.yml` to publish the
+Docker image and sync this README to Docker Hub automatically.
 
-```bash
-docker login
-```
+Configure these repository secrets in GitHub before using the workflow:
 
-Publish the default `latest` tag for `linux/amd64` and `linux/arm64`:
+| Secret               | Purpose                                      |
+| -------------------- | -------------------------------------------- |
+| `DOCKERHUB_USERNAME` | Docker Hub username with access to the repo  |
+| `DOCKERHUB_TOKEN`    | Docker Hub access token or password          |
 
-```bash
-./scripts/publish-docker.sh
-```
+The workflow runs on every push to `main`, on tags matching `v*.*.*`, and when
+triggered manually from the GitHub Actions tab.
 
-Publish one or more explicit tags:
+Image tags produced by the workflow:
 
-```bash
-./scripts/publish-docker.sh latest 1.0.0
-```
-
-The script publishes `sojiroh/cb-stream-saver` by default. Override the image
-name or platforms if needed:
-
-```bash
-IMAGE_NAME=your-user/cb-stream-saver PLATFORMS=linux/amd64 ./scripts/publish-docker.sh latest
-```
+| Git ref              | Docker tags                                  |
+| -------------------- | -------------------------------------------- |
+| Push to `main`       | `latest`, `sha-<commit>`                     |
+| Tag `v1.2.3`         | `1.2.3`, `1.2`, `sha-<commit>`              |
 
 ---
 
