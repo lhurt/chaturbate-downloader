@@ -75,7 +75,7 @@
     const profileUrl = `https://chaturbate.com/${encodeURIComponent(row.username)}/`;
 
     return `
-      <article class="tracked-card${isLive ? ' tracked-card--live' : ''}" data-username="${escapeHtml(row.username)}">
+      <article class="tracked-card${isLive || isDownloading ? ' tracked-card--live' : ''}" data-username="${escapeHtml(row.username)}">
         <div class="tracked-card__thumb">
           <a class="tracked-card__thumb-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">
             <img loading="lazy"
