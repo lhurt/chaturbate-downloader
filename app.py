@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from downloader import DownloadManager
-from downloader.extractor import fetch_room_status
+from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
 from downloader.tracker import Tracker
 
 # Configure logging
@@ -129,12 +129,16 @@ async def _poll_tracked_status() -> None:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(15.0),
                     follow_redirects=True,
-                    headers={"User-Agent": "Mozilla/5.0"},
+                    headers={
+                        **DEFAULT_HEADERS,
+                        "Referer": "https://chaturbate.com/",
+                    },
                 ) as client:
                     for username in usernames:
                         try:
                             status = await fetch_room_status(client, username)
-                            await tracker.update_status(username, status)
+                            if status is not None:
+                                await tracker.update_status(username, status)
                         except Exception as exc:
                             logger.debug("status poll failed for %s: %s", username, exc)
         except asyncio.CancelledError:
@@ -212,6 +216,7 @@ async def start_download(
     if "error" in result:
         raise HTTPException(status_code=409, detail=result["error"])
     await tracker.upsert_download(username)
+    await tracker.update_status(username, "public")
     return result
 
 

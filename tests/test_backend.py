@@ -106,6 +106,74 @@ def test_start_endpoint_rejects_unconfigured_origin_even_with_matching_host():
     assert response.status_code == 403
 
 
+def test_start_download_marks_tracker_status_public(monkeypatch):
+    async def scenario():
+        calls = []
+
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeManager:
+            async def start_download(self, **kwargs):
+                calls.append(("start", kwargs))
+                return {"status": "started", "username": kwargs["username"]}
+
+        class FakeTracker:
+            async def upsert_download(self, username):
+                calls.append(("upsert", username))
+
+            async def update_status(self, username, status):
+                calls.append(("status", username, status))
+
+        monkeypatch.setattr(webapp, "manager", FakeManager())
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+        result = await webapp.start_download(FakeRequest(), "Alice")
+
+        assert result == {"status": "started", "username": "alice"}
+        assert calls == [
+            (
+                "start",
+                {"username": "alice", "output_format": "mp4", "max_duration": None},
+            ),
+            ("upsert", "alice"),
+            ("status", "alice", "public"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_tracked_status_poll_skips_indeterminate_status(monkeypatch):
+    async def scenario():
+        updates = []
+
+        class FakeTracker:
+            async def list_usernames(self):
+                return ["alice"]
+
+            async def update_status(self, username, status):
+                updates.append((username, status))
+
+        async def fake_fetch_room_status(client, username):
+            return None
+
+        async def fake_sleep(seconds):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+        monkeypatch.setattr(webapp.asyncio, "sleep", fake_sleep)
+
+        try:
+            await webapp._poll_tracked_status()
+        except asyncio.CancelledError:
+            pass
+
+        assert updates == []
+
+    asyncio.run(scenario())
+
+
 def test_redact_text_urls_handles_absolute_and_relative_query_tokens():
     text = "https://cdn.example/playlist.m3u8?token=secret\nsegment.m4s?verify=secret"
 
