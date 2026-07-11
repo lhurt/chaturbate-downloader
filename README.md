@@ -17,6 +17,9 @@ This project is intended for personal, local use only.
   username you've downloaded. The server polls room status every 60 seconds
   and shows live thumbnails, online/offline state, and quick download or
   delete actions.
+- **Per-streamer auto recording** — enable `Auto record` on a tracked card to
+  start recording automatically whenever the background poller finds that
+  streamer live, even when the browser is closed.
 - **Clickable profile links** — every tracked card links the thumbnail and
   username directly to `https://chaturbate.com/<username>/`.
 - **Theme controls** — switch between Light, Auto, and Dark modes.
@@ -136,11 +139,25 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `HOST`         | `127.0.0.1`              | Bind address for uvicorn                      |
 | `PORT`         | `8000`                   | Port                                          |
 | `CORS_ORIGINS` | `http://localhost:8000,http://127.0.0.1:8000,http://[::1]:8000` | Comma-separated list of allowed UI origins for CORS and state-changing requests |
+| `CB_PROXY_URL` | unset                    | Optional HTTP proxy URL for Chaturbate and HLS CDN requests |
 
 Example:
 
 ```bash
 HOST=0.0.0.0 PORT=9000 uv run python app.py
+```
+
+If the assigned Chaturbate CDN edge times out from your network, route the app
+through an HTTP proxy that can reach `*.live.mmcdn.com`:
+
+```bash
+CB_PROXY_URL=http://user:pass@proxy.example:8080 uv run python app.py
+```
+
+With Docker Compose, put the same value in `.env`:
+
+```env
+CB_PROXY_URL=http://user:pass@proxy.example:8080
 ```
 
 ### Running with Docker Compose from Docker Hub
@@ -251,6 +268,7 @@ All endpoints are under the FastAPI app at `/`.
 | Method | Path                               | Description                                    |
 | ------ | ---------------------------------- | ---------------------------------------------- |
 | GET    | `/api/tracked`                     | List all tracked streamers with status, last-seen times, and active-download flags |
+| PATCH  | `/api/tracked/{username}/auto-download` | Enable or disable automatic recording with the `enabled` query parameter |
 | DELETE | `/api/tracked/{username}`          | Remove a username from the tracked registry    |
 | GET    | `/api/thumbnail/{username}`        | Fetch the current room thumbnail (cached for 30 seconds) |
 
@@ -318,7 +336,8 @@ chaturbate/
 - **Tracked streamer data** lives in `downloads/tracked.db` (or the
   directory pointed to by `DOWNLOADS_DIR`). It stores usernames, download
   counts, last-seen timestamps, and the most recent room status captured by
-  the background poller.
+  the background poller. The per-streamer auto-record preference is persisted
+  in the same database and defaults to disabled.
 - **Local-only security model.** The server is intended for local use. It
   rejects obvious browser cross-site writes via `Sec-Fetch-Site` and origin
   checks on state-changing endpoints, but it does not provide authentication.

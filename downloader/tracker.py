@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS tracked (
     download_count          INTEGER NOT NULL DEFAULT 1,
     last_status             TEXT,
     last_status_checked_at  REAL,
-    last_seen_online_at     REAL
+    last_seen_online_at     REAL,
+    auto_download           INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -47,6 +48,15 @@ class Tracker:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(tracked)").fetchall()
+            }
+            if "auto_download" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE tracked "
+                    "ADD COLUMN auto_download INTEGER NOT NULL DEFAULT 0"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -74,14 +84,18 @@ class Tracker:
             rows = self._conn.execute(
                 """
                 SELECT username, first_added_at, last_downloaded_at, download_count,
-                       last_status, last_status_checked_at, last_seen_online_at
+                       last_status, last_status_checked_at, last_seen_online_at,
+                       auto_download
                 FROM tracked
                 ORDER BY
                     CASE WHEN last_status = 'public' THEN 0 ELSE 1 END,
                     last_downloaded_at DESC
                 """
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["auto_download"] = bool(row["auto_download"])
+        return result
 
     def _list_usernames_sync(self) -> list[str]:
         with self._lock:
@@ -94,6 +108,22 @@ class Tracker:
                 "DELETE FROM tracked WHERE username = ?", (username,)
             )
         return cur.rowcount > 0
+
+    def _set_auto_download_sync(self, username: str, enabled: bool) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE tracked SET auto_download = ? WHERE username = ?",
+                (int(enabled), username),
+            )
+        return cursor.rowcount > 0
+
+    def _is_auto_download_enabled_sync(self, username: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT auto_download FROM tracked WHERE username = ?",
+                (username,),
+            ).fetchone()
+        return bool(row and row["auto_download"])
 
     def _update_status_sync(self, username: str, status: Optional[str]) -> None:
         now = time.time()
@@ -139,6 +169,16 @@ class Tracker:
     async def delete(self, username: str) -> bool:
         return await asyncio.get_running_loop().run_in_executor(
             None, self._delete_sync, username
+        )
+
+    async def set_auto_download(self, username: str, enabled: bool) -> bool:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self._set_auto_download_sync, username, enabled
+        )
+
+    async def is_auto_download_enabled(self, username: str) -> bool:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self._is_auto_download_enabled_sync, username
         )
 
     async def update_status(self, username: str, status: Optional[str]) -> None:

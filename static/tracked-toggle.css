@@ -1,0 +1,79 @@
+.tracked-card__auto {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.tracked-card__auto-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+
+.tracked-card__auto input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+}
+
+.tracked-card__switch {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 24px;
+  padding: 2px;
+  border: var(--border-w) solid var(--border);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.tracked-card__switch span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: var(--ink);
+  transition: transform 120ms ease-out;
+}
+
+.tracked-card__auto input:checked + .tracked-card__switch {
+  background: var(--accent);
+}
+
+.tracked-card__auto input:checked + .tracked-card__switch span {
+  transform: translateX(20px);
+}
+
+.tracked-card__auto input:focus-visible + .tracked-card__switch {
+  outline: var(--border-w) solid var(--border);
+  outline-offset: 3px;
+}
+
+.tracked-card__auto:hover .tracked-card__switch {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.tracked-card__auto:active .tracked-card__switch {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed);
+}
+
+.tracked-card__auto:has(input:disabled) {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tracked-card__switch,
+  .tracked-card__switch span {
+    transition: none;
+  }
+}

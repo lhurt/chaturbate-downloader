@@ -21,7 +21,9 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from downloader import DownloadManager
+from downloader.auto_download import AutoDownloadScheduler
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
+from downloader.http_client import proxy_kwargs
 from downloader.tracker import Tracker
 
 # Configure logging
@@ -39,6 +41,7 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 # Global download manager
 manager = DownloadManager(output_dir=DOWNLOADS_DIR)
 tracker = Tracker(DOWNLOADS_DIR / "tracked.db")
+auto_download_scheduler = AutoDownloadScheduler(manager, tracker)
 
 POLL_INTERVAL_SECONDS = 60
 
@@ -133,12 +136,15 @@ async def _poll_tracked_status() -> None:
                         **DEFAULT_HEADERS,
                         "Referer": "https://chaturbate.com/",
                     },
+                    **proxy_kwargs(),
                 ) as client:
                     for username in usernames:
                         try:
                             status = await fetch_room_status(client, username)
                             if status is not None:
                                 await tracker.update_status(username, status)
+                                if status == "public":
+                                    auto_download_scheduler.schedule(username)
                         except Exception as exc:
                             logger.debug("status poll failed for %s: %s", username, exc)
         except asyncio.CancelledError:
@@ -161,6 +167,7 @@ async def lifespan(app: FastAPI):
             await poll_task
         except (asyncio.CancelledError, Exception):
             pass
+        await auto_download_scheduler.stop()
         await manager.stop_all()
         tracker.close()
         logger.info("Shutting down")
@@ -361,6 +368,16 @@ async def delete_tracked(request: Request, username: str):
     return {"status": "deleted", "username": username}
 
 
+@app.patch("/api/tracked/{username}/auto-download")
+async def set_auto_download(request: Request, username: str, enabled: bool):
+    _require_trusted_origin(request)
+    username = _validate_username(username)
+    updated = await tracker.set_auto_download(username, enabled)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Username not tracked")
+    return {"username": username, "auto_download": enabled}
+
+
 @app.get("/api/thumbnail/{username}")
 async def get_thumbnail(username: str):
     username = _validate_username(username)
@@ -381,6 +398,7 @@ async def get_thumbnail(username: str):
                     "User-Agent": "Mozilla/5.0",
                     "Referer": "https://chaturbate.com/",
                 },
+                **proxy_kwargs(),
             ) as client:
                 resp = await client.get(_THUMB_URL.format(username=username))
         except Exception as exc:
@@ -461,6 +479,7 @@ async def debug_playlist(username: str):
             headers=DEFAULT_HEADERS,
             timeout=httpx.Timeout(20.0),
             follow_redirects=True,
+            **proxy_kwargs(),
         ) as client:
             resp = await client.get(hls_url)
             master_body = resp.text

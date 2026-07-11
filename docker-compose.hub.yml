@@ -9,5 +9,6 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      CB_PROXY_URL: ${CB_PROXY_URL:-}
     volumes:
       - ./downloads:/app/downloads

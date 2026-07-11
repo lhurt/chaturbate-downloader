@@ -29,6 +29,7 @@ import httpx
 import m3u8
 
 from .extractor import DEFAULT_HEADERS
+from .http_client import proxy_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ SEGMENT_RETRY_BASE_DELAY = 0.5
 MAX_PLAYLIST_ERRORS = 15
 MAX_EMPTY_POLLS = 60
 MAX_TOKEN_REFRESHES = 10
+MAX_MASTER_RESOLVE_REFRESHES = 3
+MASTER_PLAYLIST_TIMEOUT = 10.0
 MAX_PLAYLIST_RECURSION = 5
 MAX_SEEN_URLS = 10000
 
@@ -60,6 +63,14 @@ def _redact_text_urls(text: str) -> str:
         text,
     )
     return re.sub(r"([^#\s\"'<>?]+)\?[^\s\"'<>]+", r"\1?…", redacted)
+
+
+def _exception_summary(exc: Exception) -> str:
+    """Return useful exception text even for exceptions with empty str()."""
+    message = str(exc).strip()
+    if message:
+        return message
+    return type(exc).__name__
 
 
 def _segment_identity(url: str) -> str:
@@ -154,6 +165,7 @@ class HLSDownloader:
         self.on_progress = on_progress
         self._stop_events: dict[str, asyncio.Event] = {}
         self.refresh_url_callback: Optional[Callable] = None
+        self._last_master_error: str = ""
 
     def stop(self, username: str):
         event = self._stop_events.setdefault(username, asyncio.Event())
@@ -190,11 +202,32 @@ class HLSDownloader:
             timeout=httpx.Timeout(SEGMENT_TIMEOUT),
             follow_redirects=True,
             headers=DEFAULT_HEADERS,
+            **proxy_kwargs(),
         ) as client:
             video_url, audio_url = await self._resolve_master(client, m3u8_url)
+            master_refreshes = 0
+            while not video_url and master_refreshes < MAX_MASTER_RESOLVE_REFRESHES:
+                master_refreshes += 1
+                reason = self._last_master_error or "no video playlist"
+                logger.warning(
+                    "Master playlist resolution failed for %s (%s), refreshing URL (#%d)",
+                    username,
+                    _redact_text_urls(reason),
+                    master_refreshes,
+                )
+                new_url = await self._refresh_url(username)
+                if not new_url:
+                    break
+                m3u8_url = new_url
+                video_url, audio_url = await self._resolve_master(client, m3u8_url)
 
             if not video_url:
+                detail = self._last_master_error
                 progress.error_message = "No se pudo resolver el playlist de video"
+                if detail:
+                    progress.error_message = (
+                        f"{progress.error_message}: {_redact_text_urls(detail)}"
+                    )
                 progress.status = "error"
                 progress.is_live = False
                 self._stop_events.pop(username, None)
@@ -314,20 +347,34 @@ class HLSDownloader:
         master_url: str,
     ) -> Tuple[Optional[str], Optional[str]]:
         """Parse master playlist to extract video variant URL and audio URL."""
+        self._last_master_error = ""
         try:
-            resp = await client.get(master_url)
+            resp = await client.get(
+                master_url,
+                timeout=httpx.Timeout(MASTER_PLAYLIST_TIMEOUT),
+            )
             resp.raise_for_status()
         except Exception as exc:
-            logger.error("Cannot fetch master playlist: %s", _redact_text_urls(str(exc)))
+            exc_summary = _exception_summary(exc)
+            self._last_master_error = f"Cannot fetch master playlist: {exc_summary}"
+            logger.error(
+                "Cannot fetch master playlist: %s",
+                _redact_text_urls(exc_summary),
+            )
             return None, None
 
         master = m3u8.loads(resp.text)
 
         if not master.is_variant:
-            return master_url, None
+            if master.segments:
+                return master_url, None
+            self._last_master_error = "Master playlist is not a playable media playlist"
+            logger.error("%s", self._last_master_error)
+            return None, None
 
         if not master.playlists:
-            logger.error("Master playlist has no variants")
+            self._last_master_error = "Master playlist has no variants"
+            logger.error("%s", self._last_master_error)
             return None, None
 
         best = max(master.playlists, key=lambda p: p.stream_info.bandwidth or 0)

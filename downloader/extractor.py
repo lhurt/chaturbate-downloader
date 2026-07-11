@@ -23,6 +23,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .http_client import proxy_kwargs
+
 logger = logging.getLogger(__name__)
 
 BASE_DOMAIN = "https://chaturbate.com"
@@ -229,6 +231,7 @@ async def extract_hls_url(username: str) -> Optional[str]:
         headers=DEFAULT_HEADERS,
         timeout=httpx.Timeout(20.0),
         follow_redirects=True,
+        **proxy_kwargs(),
     ) as client:
         strategies = [
             ("chatvideocontext", _strategy_chatvideocontext),

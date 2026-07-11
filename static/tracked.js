@@ -7,6 +7,7 @@
     delete:      (username) => `/api/tracked/${encodeURIComponent(username)}`,
     thumbnail:   (username) => `/api/thumbnail/${encodeURIComponent(username)}`,
     startDownload: (username) => `/api/download/start?username=${encodeURIComponent(username)}&output_format=mp4`,
+    autoDownload: (username, enabled) => `/api/tracked/${encodeURIComponent(username)}/auto-download?enabled=${enabled}`,
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -92,6 +93,13 @@
           </div>
           <div class="tracked-card__meta" title="${escapeHtml(formatAbsolute(row.last_seen_online_at))}">${escapeHtml(lastSeen)}</div>
           ${lastDl ? `<div class="tracked-card__meta">${escapeHtml(lastDl)}</div>` : ''}
+          <label class="tracked-card__auto" title="Start recording automatically whenever this streamer is live">
+            <span class="tracked-card__auto-label">Auto record</span>
+            <input type="checkbox"
+                   data-auto-download
+                   ${row.auto_download ? 'checked' : ''}>
+            <span class="tracked-card__switch" aria-hidden="true"><span></span></span>
+          </label>
           <div class="tracked-card__actions">
             <button type="button"
                     class="tracked-card__btn tracked-card__btn--primary"
@@ -112,6 +120,7 @@
   function render(rows) {
     const sig = JSON.stringify(rows.map((r) => [
       r.username, r.last_status, r.last_seen_online_at, r.downloading, r.download_count,
+      r.auto_download,
     ]));
     if (sig === lastRendered) return;
     lastRendered = sig;
@@ -132,8 +141,10 @@
       const resp = await apiCall(API.list);
       const data = await resp.json();
       render(data.tracked || []);
+      return true;
     } catch (err) {
       console.warn('[tracked] fetch failed:', err.message);
+      return false;
     }
   }
 
@@ -161,6 +172,27 @@
     }
   }
 
+  async function updateAutoDownload(username, input) {
+    const enabled = input.checked;
+    const label = input.closest('.tracked-card__auto')?.querySelector('.tracked-card__auto-label');
+    if (label) label.textContent = 'Saving…';
+    input.disabled = true;
+    try {
+      await apiCall(API.autoDownload(username, enabled), { method: 'PATCH' });
+      lastRendered = null;
+      const refreshed = await fetchTracked();
+      if (!refreshed) {
+        input.disabled = false;
+        if (label) label.textContent = 'Auto record';
+      }
+    } catch (err) {
+      input.checked = !enabled;
+      input.disabled = false;
+      if (label) label.textContent = 'Auto record';
+      alert(`Failed to update auto record: ${err.message}`);
+    }
+  }
+
   listEl.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-action]');
     if (!btn) return;
@@ -169,6 +201,13 @@
     if (!username) return;
     if (btn.dataset.action === 'download') startDownload(username);
     else if (btn.dataset.action === 'delete') deleteTracked(username);
+  });
+
+  listEl.addEventListener('change', (ev) => {
+    const input = ev.target.closest('[data-auto-download]');
+    if (!input) return;
+    const username = input.closest('.tracked-card')?.dataset.username;
+    if (username) updateAutoDownload(username, input);
   });
 
   if (refreshBtn) {

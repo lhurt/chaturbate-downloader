@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as webapp
 import downloader.converter as converter_module
 import downloader.hls as hls_module
+from downloader.http_client import proxy_kwargs
 from downloader.hls import DownloadProgress, HLSDownloader
 from downloader.manager import DownloadManager
 
@@ -195,6 +196,16 @@ def test_hls_redaction_helpers_strip_tokens_from_urls_and_text():
     assert "https://cdn.example/path/seg.m4s?…" in redacted
 
 
+def test_exception_summary_falls_back_to_exception_type():
+    assert hls_module._exception_summary(httpx.ConnectTimeout("")) == "ConnectTimeout"
+
+
+def test_proxy_kwargs_reads_explicit_cb_proxy_url(monkeypatch):
+    monkeypatch.setenv("CB_PROXY_URL", "http://proxy.example:8080")
+
+    assert proxy_kwargs() == {"proxy": "http://proxy.example:8080"}
+
+
 def test_completed_file_username_parsing_preserves_usernames_containing_20(tmp_path, monkeypatch):
     completed = tmp_path / "alice_2020_fan_2026-04-27_10-00-00.mp4"
     completed.write_bytes(b"done")
@@ -239,6 +250,79 @@ def test_finalize_partial_audio_uses_warning_not_error(tmp_path):
         assert result.warning_message == "Solo video (audio incompleto)"
         assert Path(result.output_path).read_bytes() == b"video"
         assert not audio_file.exists()
+
+    asyncio.run(scenario())
+
+
+def test_download_stream_refreshes_when_initial_master_resolution_fails(tmp_path):
+    async def scenario():
+        class FakeDownloader(HLSDownloader):
+            def __init__(self):
+                super().__init__(output_dir=tmp_path)
+                self.resolves = []
+                self.refreshes = 0
+
+            async def _resolve_master(self, client, master_url):
+                self.resolves.append(master_url)
+                if len(self.resolves) == 1:
+                    self._last_master_error = "Cannot fetch master playlist: timeout"
+                    return None, None
+                return "https://cdn.example/live/video.m3u8?token=new", None
+
+            async def _refresh_url(self, username):
+                self.refreshes += 1
+                return "https://cdn.example/live/master.m3u8?token=new"
+
+            async def _validate_playlist(self, client, url, label):
+                return True
+
+            async def _download_track(self, *args, **kwargs):
+                return True
+
+            async def _finalize(self, progress, *args, **kwargs):
+                progress.status = "done"
+                progress.output_path = str(tmp_path / "alice.mp4")
+                return progress
+
+        downloader = FakeDownloader()
+
+        result = await downloader.download_stream(
+            "alice",
+            "https://cdn.example/live/master.m3u8?token=old",
+        )
+
+        assert result.status == "done"
+        assert downloader.refreshes == 1
+        assert downloader.resolves == [
+            "https://cdn.example/live/master.m3u8?token=old",
+            "https://cdn.example/live/master.m3u8?token=new",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_download_stream_reports_initial_master_resolution_cause(tmp_path):
+    async def scenario():
+        class FakeDownloader(HLSDownloader):
+            async def _resolve_master(self, client, master_url):
+                self._last_master_error = "Cannot fetch master playlist: timed out"
+                return None, None
+
+            async def _refresh_url(self, username):
+                return None
+
+        downloader = FakeDownloader(output_dir=tmp_path)
+
+        result = await downloader.download_stream(
+            "alice",
+            "https://cdn.example/live/master.m3u8?token=secret",
+        )
+
+        assert result.status == "error"
+        assert result.error_message == (
+            "No se pudo resolver el playlist de video: "
+            "Cannot fetch master playlist: timed out"
+        )
 
     asyncio.run(scenario())
 
