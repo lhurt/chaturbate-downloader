@@ -107,7 +107,13 @@
         <div class="section__header">
           <h2 class="section__title">Tracked Streamers</h2>
           <span class="section__count" id="tracked-count">0</span>
-          <button type="button" class="section__action" id="tracked-refresh">Refresh</button>
+          <div class="section__action section__action-group">
+            <div class="theme-toggle" role="group" aria-label="Tracked view" id="tracked-view-toggle">
+              <button type="button" class="theme-toggle__btn" data-view-set="grid" aria-pressed="true">Cards</button>
+              <button type="button" class="theme-toggle__btn" data-view-set="compact" aria-pressed="false">List</button>
+            </div>
+            <button type="button" id="tracked-refresh">Refresh</button>
+          </div>
         </div>
         <form id="tracked-add-form" class="tracked-add">
           <input type="text" id="tracked-add-username" name="username" placeholder="username" autocomplete="off" required>

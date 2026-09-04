@@ -246,3 +246,85 @@
   transform: none;
   box-shadow: none;
 }
+
+/* ── Compact list view ── */
+
+.tracked-grid--compact {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tracked-grid--compact .tracked-card {
+  position: relative;
+  flex-direction: row;
+  align-items: center;
+}
+
+.tracked-grid--compact .tracked-card--live {
+  box-shadow: 3px 3px 0 var(--live);
+}
+
+.tracked-grid--compact .tracked-card__thumb {
+  position: static;
+  width: 56px;
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  border-bottom: 0;
+  border-right: var(--border-w) solid var(--border);
+}
+
+.tracked-grid--compact .tracked-card__pill-wrap {
+  position: absolute;
+  top: 50%;
+  left: auto;
+  right: 12px;
+  transform: translateY(-50%);
+}
+
+.tracked-grid--compact .tracked-card__body {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.tracked-grid--compact .tracked-card__title {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.tracked-grid--compact .tracked-card__meta {
+  display: none;
+}
+
+.tracked-grid--compact .tracked-card__auto {
+  min-height: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  gap: 6px;
+}
+
+.tracked-grid--compact .tracked-card__auto-label {
+  display: none;
+}
+
+.tracked-grid--compact .tracked-card__actions {
+  border-top: 0;
+  margin-top: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.tracked-grid--compact .tracked-card__btn {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+}
+
+@media (max-width: 560px) {
+  .tracked-grid--compact .tracked-card__pill-wrap {
+    display: none;
+  }
+}

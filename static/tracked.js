@@ -19,11 +19,38 @@
   const addForm = $('#tracked-add-form');
   const addInput = $('#tracked-add-username');
   const addBtn = $('#tracked-add-btn');
+  const viewToggle = $('#tracked-view-toggle');
 
   if (!listEl || !countEl) return;
 
   let pollTimer = null;
   let lastRendered = null;
+
+  const VIEW_STORAGE_KEY = 'tracked:view';
+
+  function loadView() {
+    try {
+      return localStorage.getItem(VIEW_STORAGE_KEY) === 'compact' ? 'compact' : 'grid';
+    } catch {
+      return 'grid';
+    }
+  }
+
+  function applyView(view) {
+    listEl.classList.toggle('tracked-grid--compact', view === 'compact');
+    if (viewToggle) {
+      viewToggle.querySelectorAll('[data-view-set]').forEach((btn) => {
+        const active = btn.dataset.viewSet === view;
+        btn.classList.toggle('theme-toggle__btn--active', active);
+        btn.setAttribute('aria-pressed', String(active));
+      });
+    }
+  }
+
+  function setView(view) {
+    applyView(view);
+    try { localStorage.setItem(VIEW_STORAGE_KEY, view); } catch {}
+  }
 
   function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, (c) => ({
@@ -242,6 +269,14 @@
       if (username) addTracked(username);
     });
   }
+
+  if (viewToggle) {
+    viewToggle.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-view-set]');
+      if (btn) setView(btn.dataset.viewSet);
+    });
+  }
+  applyView(loadView());
 
   fetchTracked();
   pollTimer = setInterval(fetchTracked, POLL_INTERVAL);
