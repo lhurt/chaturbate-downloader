@@ -143,6 +143,7 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `CONTACT_SHEET_INTERVAL_SECONDS` | `60`   | Seconds between thumbnail frames in a generated contact sheet |
 | `CONTACT_SHEET_TILE_WIDTH` | `160`        | Width in pixels of each thumbnail tile |
 | `CONTACT_SHEET_COLUMNS` | `10`            | Number of tiles per row in the contact sheet grid |
+| `CONTACT_SHEET_AUTO_GENERATE` | `false`  | Generate contact sheets automatically for every completed download, including backfilling existing files that don't have one yet, instead of only on first view |
 
 Example:
 

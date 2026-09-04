@@ -40,7 +40,9 @@ DOWNLOADS_DIR = (Path(__file__).parent / "downloads").resolve()
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 # Global download manager
-manager = DownloadManager(output_dir=DOWNLOADS_DIR)
+manager = DownloadManager(
+    output_dir=DOWNLOADS_DIR, on_complete=lambda path: _schedule_contact_sheet(Path(path))
+)
 tracker = Tracker(DOWNLOADS_DIR / "tracked.db")
 auto_download_scheduler = AutoDownloadScheduler(manager, tracker)
 
@@ -64,6 +66,9 @@ ALLOWED_ORIGINS = sorted(ALLOWED_ORIGIN_SET)
 CONTACT_SHEET_INTERVAL_SECONDS = int(os.getenv("CONTACT_SHEET_INTERVAL_SECONDS", "60"))
 CONTACT_SHEET_TILE_WIDTH = int(os.getenv("CONTACT_SHEET_TILE_WIDTH", "160"))
 CONTACT_SHEET_COLUMNS = int(os.getenv("CONTACT_SHEET_COLUMNS", "10"))
+CONTACT_SHEET_AUTO_GENERATE = os.getenv(
+    "CONTACT_SHEET_AUTO_GENERATE", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _validate_username(username: str) -> str:
@@ -308,6 +313,51 @@ async def download_file_by_name(filename: str):
 
 
 _CONTACT_SHEET_LOCK = asyncio.Lock()
+_contact_sheet_pending: set[str] = set()
+
+
+def _contact_sheet_path(file_path: Path) -> Path:
+    return file_path.with_name(file_path.stem + "_contactsheet.jpg")
+
+
+async def _ensure_contact_sheet(file_path: Path) -> bool:
+    """Generate the contact sheet for `file_path` if it doesn't exist yet.
+    Safe to call concurrently: a global lock plus a double-checked existence
+    test means only one generation ever runs at a time for a given file."""
+    sheet_path = _contact_sheet_path(file_path)
+    if sheet_path.exists():
+        return True
+
+    async with _CONTACT_SHEET_LOCK:
+        if sheet_path.exists():
+            return True
+        return await asyncio.to_thread(
+            generate_contact_sheet,
+            str(file_path),
+            str(sheet_path),
+            CONTACT_SHEET_INTERVAL_SECONDS,
+            CONTACT_SHEET_TILE_WIDTH,
+            CONTACT_SHEET_COLUMNS,
+        )
+
+
+async def _auto_generate_contact_sheet(file_path: Path) -> None:
+    key = file_path.name
+    if key in _contact_sheet_pending:
+        return
+    _contact_sheet_pending.add(key)
+    try:
+        if not await _ensure_contact_sheet(file_path):
+            logger.warning("Auto contact-sheet generation failed for %s", key)
+    finally:
+        _contact_sheet_pending.discard(key)
+
+
+def _schedule_contact_sheet(file_path: Path) -> None:
+    """Fire-and-forget an automatic contact-sheet generation, if enabled."""
+    if not CONTACT_SHEET_AUTO_GENERATE:
+        return
+    asyncio.create_task(_auto_generate_contact_sheet(file_path))
 
 
 @app.get("/api/downloads/contact-sheet/{filename}")
@@ -318,25 +368,10 @@ async def get_contact_sheet(filename: str):
     if not file_path.exists() or not _is_completed_media_file(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    sheet_path = file_path.with_name(file_path.stem + "_contactsheet.jpg")
+    if not await _ensure_contact_sheet(file_path):
+        raise HTTPException(status_code=502, detail="Failed to generate contact sheet")
 
-    if not sheet_path.exists():
-        async with _CONTACT_SHEET_LOCK:
-            if not sheet_path.exists():
-                ok = await asyncio.to_thread(
-                    generate_contact_sheet,
-                    str(file_path),
-                    str(sheet_path),
-                    CONTACT_SHEET_INTERVAL_SECONDS,
-                    CONTACT_SHEET_TILE_WIDTH,
-                    CONTACT_SHEET_COLUMNS,
-                )
-                if not ok:
-                    raise HTTPException(
-                        status_code=502, detail="Failed to generate contact sheet"
-                    )
-
-    return FileResponse(path=str(sheet_path), media_type="image/jpeg")
+    return FileResponse(path=str(_contact_sheet_path(file_path)), media_type="image/jpeg")
 
 
 @app.get("/api/downloads/list")
@@ -348,7 +383,9 @@ async def list_downloaded_files():
             stem = f.stem
             username = _username_from_completed_stem(stem)
             st = f.stat()
-            has_contact_sheet = f.with_name(stem + "_contactsheet.jpg").exists()
+            has_contact_sheet = _contact_sheet_path(f).exists()
+            if not has_contact_sheet:
+                _schedule_contact_sheet(f)
             files.append(
                 {
                     "filename": f.name,

@@ -946,3 +946,129 @@ def test_status_handles_existing_download_while_new_start_is_reserved(monkeypatc
         await asyncio.wait_for(start_task, timeout=1)
 
     asyncio.run(scenario())
+
+
+def test_manager_invokes_on_complete_after_successful_download(monkeypatch, tmp_path):
+    async def scenario():
+        import downloader.manager as manager_module
+
+        completed_paths = []
+
+        async def fake_extract_hls_url(username):
+            return "https://example.invalid/stream.m3u8?token=secret"
+
+        class FakeDownloader:
+            async def download_stream(self, username, *args, **kwargs):
+                return manager_module.DownloadProgress(
+                    username=username, status="done", output_path="/downloads/alice.mp4"
+                )
+
+            def stop(self, username):
+                pass
+
+        monkeypatch.setattr(manager_module, "extract_hls_url", fake_extract_hls_url)
+        manager = DownloadManager(output_dir=tmp_path, on_complete=completed_paths.append)
+        monkeypatch.setattr(manager, "_get_downloader", lambda: FakeDownloader())
+
+        await manager.start_download("alice")
+        await asyncio.sleep(0)
+
+        assert completed_paths == ["/downloads/alice.mp4"]
+
+    asyncio.run(scenario())
+
+
+def test_manager_skips_on_complete_when_download_errors(monkeypatch, tmp_path):
+    async def scenario():
+        import downloader.manager as manager_module
+
+        completed_paths = []
+
+        async def fake_extract_hls_url(username):
+            return "https://example.invalid/stream.m3u8?token=secret"
+
+        class FakeDownloader:
+            async def download_stream(self, username, *args, **kwargs):
+                return manager_module.DownloadProgress(username=username, status="error")
+
+            def stop(self, username):
+                pass
+
+        monkeypatch.setattr(manager_module, "extract_hls_url", fake_extract_hls_url)
+        manager = DownloadManager(output_dir=tmp_path, on_complete=completed_paths.append)
+        monkeypatch.setattr(manager, "_get_downloader", lambda: FakeDownloader())
+
+        await manager.start_download("alice")
+        await asyncio.sleep(0)
+
+        assert completed_paths == []
+
+    asyncio.run(scenario())
+
+
+def test_schedule_contact_sheet_noop_when_auto_generate_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, "CONTACT_SHEET_AUTO_GENERATE", False)
+    created = []
+    monkeypatch.setattr(webapp.asyncio, "create_task", lambda coro: created.append(coro))
+
+    webapp._schedule_contact_sheet(tmp_path / "alice_2026-04-27_10-00-00.mp4")
+
+    assert created == []
+
+
+def test_schedule_contact_sheet_spawns_task_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(webapp, "CONTACT_SHEET_AUTO_GENERATE", True)
+    created = []
+
+    def fake_create_task(coro):
+        created.append(coro)
+        coro.close()  # avoid an "never awaited" warning; we only assert scheduling here
+
+    monkeypatch.setattr(webapp.asyncio, "create_task", fake_create_task)
+
+    webapp._schedule_contact_sheet(tmp_path / "alice_2026-04-27_10-00-00.mp4")
+
+    assert len(created) == 1
+
+
+def test_downloads_list_auto_generates_missing_contact_sheets_when_enabled(tmp_path, monkeypatch):
+    async def scenario():
+        (tmp_path / "alice_2026-04-27_10-00-00.mp4").write_bytes(b"done")
+        monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+        monkeypatch.setattr(webapp, "CONTACT_SHEET_AUTO_GENERATE", True)
+
+        def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+            Path(output_jpg).write_bytes(b"jpegbytes")
+            return True
+
+        monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+        result = await webapp.list_downloaded_files()
+        assert result[0]["has_contact_sheet"] is False
+
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=1)
+
+        sheet_path = tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg"
+        assert sheet_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_downloads_list_does_not_auto_generate_when_disabled(tmp_path, monkeypatch):
+    async def scenario():
+        (tmp_path / "alice_2026-04-27_10-00-00.mp4").write_bytes(b"done")
+        monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+        monkeypatch.setattr(webapp, "CONTACT_SHEET_AUTO_GENERATE", False)
+
+        calls = []
+        monkeypatch.setattr(
+            webapp, "generate_contact_sheet", lambda *a, **k: calls.append(a) or True
+        )
+
+        await webapp.list_downloaded_files()
+        await asyncio.sleep(0)
+
+        assert calls == []
+
+    asyncio.run(scenario())

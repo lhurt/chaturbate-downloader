@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from .extractor import extract_hls_url
@@ -19,8 +19,13 @@ logger = logging.getLogger(__name__)
 class DownloadManager:
     """Central manager for all active downloads."""
 
-    def __init__(self, output_dir: str | Path = "downloads"):
+    def __init__(
+        self,
+        output_dir: str | Path = "downloads",
+        on_complete: Optional[Callable[[str], None]] = None,
+    ):
         self.output_dir = Path(output_dir)
+        self.on_complete = on_complete
         self._downloads: Dict[str, DownloadProgress] = {}
         self._tasks: Dict[str, asyncio.Task | object] = {}
         self._downloader: Optional[HLSDownloader] = None
@@ -103,6 +108,8 @@ class DownloadManager:
                         username,
                         result.output_path or result.error_message,
                     )
+                    if result.status == "done" and result.output_path and self.on_complete:
+                        self.on_complete(result.output_path)
                 except asyncio.CancelledError:
                     logger.info("Download cancelled for %s", username)
                     raise
