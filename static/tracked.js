@@ -46,7 +46,7 @@
     if (viewToggle) {
       viewToggle.querySelectorAll('[data-view-set]').forEach((btn) => {
         const active = btn.dataset.viewSet === view;
-        btn.classList.toggle('theme-toggle__btn--active', active);
+        btn.classList.toggle('view-toggle__btn--active', active);
         btn.setAttribute('aria-pressed', String(active));
       });
     }

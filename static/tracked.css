@@ -1,3 +1,48 @@
+/* ── View toggle (Cards / List) ── */
+
+.view-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: var(--border-w) solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.view-toggle__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-right: var(--border-w) solid var(--border);
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background 80ms ease-out, color 80ms ease-out;
+}
+
+.view-toggle__btn:last-child {
+  border-right: 0;
+}
+
+.view-toggle__btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.view-toggle__btn--active,
+.view-toggle__btn--active:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.view-toggle__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .tracked-add {
   display: flex;
   gap: 8px;
@@ -192,7 +237,6 @@
   gap: 8px;
   padding: 12px 0 0;
   border-top: var(--border-w) solid var(--border-thin);
-  margin-top: auto;
 }
 
 .tracked-card__btn {
@@ -264,6 +308,10 @@
   gap: 12px;
   padding: 8px 12px;
   border-bottom: var(--border-w) solid var(--border-thin);
+}
+
+.tracked-row[hidden] {
+  display: none;
 }
 
 .tracked-grid--rows .tracked-row:last-child {
@@ -359,6 +407,12 @@
 
 .tracked-row__status {
   min-width: 0;
+  display: flex;
+}
+
+.tracked-row__status .tracked__pill {
+  width: 100%;
+  justify-content: center;
 }
 
 .tracked-row__seen {
@@ -395,8 +449,8 @@
 }
 
 .tracked-row__auto .tracked-card__switch span {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
 }
 
 .tracked-row__auto input:checked + .tracked-card__switch {
@@ -412,10 +466,20 @@
   outline-offset: 2px;
 }
 
+.tracked-row__auto:hover .tracked-card__switch {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--border);
+}
+
+.tracked-row__auto:active .tracked-card__switch {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-pressed);
+}
+
 .tracked-row__actions {
   display: flex;
   gap: 6px;
-  justify-self: end;
+  justify-self: stretch;
 }
 
 .tracked-row__actions .tracked-card__btn {
@@ -423,9 +487,18 @@
   font-size: 11px;
 }
 
+.tracked-row__actions .tracked-card__btn--primary {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tracked-row__actions .tracked-card__btn--ghost {
-  width: auto;
-  padding: 5px 8px;
+  flex: 0 0 28px;
+  width: 28px;
+  padding: 5px 0;
 }
 
 @media (max-width: 640px) {

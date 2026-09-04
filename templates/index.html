@@ -108,9 +108,24 @@
           <h2 class="section__title">Tracked Streamers</h2>
           <span class="section__count" id="tracked-count">0</span>
           <div class="section__action section__action-group">
-            <div class="theme-toggle" role="group" aria-label="Tracked view" id="tracked-view-toggle">
-              <button type="button" class="theme-toggle__btn" data-view-set="grid" aria-pressed="true">Cards</button>
-              <button type="button" class="theme-toggle__btn" data-view-set="compact" aria-pressed="false">List</button>
+            <div class="view-toggle" role="group" aria-label="Tracked view" id="tracked-view-toggle">
+              <button type="button" class="view-toggle__btn" data-view-set="grid" aria-pressed="true" title="Card view">
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                  <rect x="1" y="1" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+                  <rect x="9" y="1" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+                  <rect x="1" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+                  <rect x="9" y="9" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1.6"></rect>
+                </svg>
+                <span class="sr-only">Cards</span>
+              </button>
+              <button type="button" class="view-toggle__btn" data-view-set="compact" aria-pressed="false" title="List view">
+                <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                  <rect x="1" y="2" width="14" height="2.4" fill="currentColor"></rect>
+                  <rect x="1" y="6.8" width="14" height="2.4" fill="currentColor"></rect>
+                  <rect x="1" y="11.6" width="14" height="2.4" fill="currentColor"></rect>
+                </svg>
+                <span class="sr-only">List</span>
+              </button>
             </div>
             <button type="button" id="tracked-refresh">Refresh</button>
           </div>
