@@ -579,12 +579,140 @@
   }
 
   const contactSheetModal = document.getElementById('contact-sheet-modal');
+  const contactSheetModalDialog = document.getElementById('contact-sheet-modal-dialog');
+  const contactSheetModalBody = document.getElementById('contact-sheet-modal-body');
   const contactSheetModalImg = document.getElementById('contact-sheet-modal-img');
   const contactSheetModalTitle = document.getElementById('contact-sheet-modal-title');
+  const contactSheetZoomLevel = document.getElementById('contact-sheet-zoom-level');
+  const contactSheetZoomInBtn = document.getElementById('contact-sheet-zoom-in');
+  const contactSheetZoomOutBtn = document.getElementById('contact-sheet-zoom-out');
+  const contactSheetZoomResetBtn = document.getElementById('contact-sheet-zoom-reset');
+  const contactSheetZoomActualBtn = document.getElementById('contact-sheet-zoom-actual');
+  const contactSheetFullpageBtn = document.getElementById('contact-sheet-fullpage');
+  const contactSheetNaturalSizeEl = document.getElementById('contact-sheet-natural-size');
   let contactSheetObjectUrl = null;
+
+  const CONTACT_SHEET_MIN_ZOOM = 0.25;
+  const CONTACT_SHEET_MAX_ZOOM = 4;
+  const CONTACT_SHEET_ZOOM_STEP = 0.25;
+  let contactSheetZoom = 1;
+  let contactSheetMaximized = false;
+
+  function actualContactSheetZoomPercent() {
+    const naturalWidth = contactSheetModalImg.naturalWidth;
+    if (!naturalWidth) return contactSheetZoom * 100;
+    // clientWidth reflects the CSS-fitted size (max-width:100%; height:auto) and is
+    // unaffected by the transform, so this is the true on-screen size vs. the source image.
+    const fittedWidth = contactSheetModalImg.clientWidth;
+    return (fittedWidth * contactSheetZoom / naturalWidth) * 100;
+  }
+
+  function applyContactSheetZoom() {
+    contactSheetModalImg.style.transform = `scale(${contactSheetZoom})`;
+    contactSheetZoomLevel.textContent = `${Math.round(actualContactSheetZoomPercent())}%`;
+  }
+
+  function setContactSheetActualSize() {
+    const naturalWidth = contactSheetModalImg.naturalWidth;
+    const fittedWidth = contactSheetModalImg.clientWidth;
+    if (!naturalWidth || !fittedWidth) return;
+    setContactSheetZoom(naturalWidth / fittedWidth);
+  }
+
+  function updateContactSheetNaturalSize() {
+    const { naturalWidth, naturalHeight } = contactSheetModalImg;
+    contactSheetNaturalSizeEl.textContent = naturalWidth && naturalHeight
+      ? `${naturalWidth} × ${naturalHeight}px`
+      : '';
+  }
+
+  contactSheetModalImg.addEventListener('load', () => {
+    updateContactSheetNaturalSize();
+    applyContactSheetZoom();
+  });
+
+  function setContactSheetZoom(zoom, clientX, clientY) {
+    const clamped = Math.min(CONTACT_SHEET_MAX_ZOOM, Math.max(CONTACT_SHEET_MIN_ZOOM, zoom));
+    if (clamped === contactSheetZoom) return;
+
+    if (clientX != null && clientY != null) {
+      const rect = contactSheetModalBody.getBoundingClientRect();
+      const originX = contactSheetModalBody.scrollLeft + clientX - rect.left;
+      const originY = contactSheetModalBody.scrollTop + clientY - rect.top;
+      const ratio = clamped / contactSheetZoom;
+      contactSheetZoom = clamped;
+      applyContactSheetZoom();
+      contactSheetModalBody.scrollLeft = originX * ratio - (clientX - rect.left);
+      contactSheetModalBody.scrollTop = originY * ratio - (clientY - rect.top);
+    } else {
+      contactSheetZoom = clamped;
+      applyContactSheetZoom();
+    }
+  }
+
+  function resetContactSheetView() {
+    contactSheetZoom = 1;
+    contactSheetMaximized = false;
+    applyContactSheetZoom();
+    contactSheetNaturalSizeEl.textContent = '';
+    contactSheetModalDialog.classList.remove('modal__dialog--maximized');
+    contactSheetFullpageBtn.textContent = 'Full page';
+    contactSheetFullpageBtn.setAttribute('aria-pressed', 'false');
+  }
+
+  function toggleContactSheetFullpage() {
+    contactSheetMaximized = !contactSheetMaximized;
+    contactSheetModalDialog.classList.toggle('modal__dialog--maximized', contactSheetMaximized);
+    contactSheetFullpageBtn.textContent = contactSheetMaximized ? 'Exit full page' : 'Full page';
+    contactSheetFullpageBtn.setAttribute('aria-pressed', String(contactSheetMaximized));
+    applyContactSheetZoom();
+  }
+
+  contactSheetZoomInBtn.addEventListener('click', () => setContactSheetZoom(contactSheetZoom + CONTACT_SHEET_ZOOM_STEP));
+  contactSheetZoomOutBtn.addEventListener('click', () => setContactSheetZoom(contactSheetZoom - CONTACT_SHEET_ZOOM_STEP));
+  contactSheetZoomResetBtn.addEventListener('click', () => setContactSheetZoom(1));
+  contactSheetZoomActualBtn.addEventListener('click', setContactSheetActualSize);
+  contactSheetFullpageBtn.addEventListener('click', toggleContactSheetFullpage);
+
+  contactSheetModalImg.addEventListener('dblclick', (e) => {
+    setContactSheetZoom(contactSheetZoom > 1 ? 1 : 2, e.clientX, e.clientY);
+  });
+
+  contactSheetModalBody.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const direction = e.deltaY > 0 ? -1 : 1;
+    setContactSheetZoom(contactSheetZoom + direction * CONTACT_SHEET_ZOOM_STEP, e.clientX, e.clientY);
+  }, { passive: false });
+
+  let contactSheetPanState = null;
+
+  contactSheetModalBody.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    contactSheetPanState = {
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: contactSheetModalBody.scrollLeft,
+      scrollTop: contactSheetModalBody.scrollTop,
+    };
+    contactSheetModalBody.classList.add('is-panning');
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!contactSheetPanState) return;
+    contactSheetModalBody.scrollLeft = contactSheetPanState.scrollLeft - (e.clientX - contactSheetPanState.startX);
+    contactSheetModalBody.scrollTop = contactSheetPanState.scrollTop - (e.clientY - contactSheetPanState.startY);
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!contactSheetPanState) return;
+    contactSheetPanState = null;
+    contactSheetModalBody.classList.remove('is-panning');
+  });
 
   function openContactSheetModal(filename) {
     contactSheetModalTitle.textContent = filename;
+    resetContactSheetView();
     contactSheetModal.hidden = false;
     contactSheetModal.setAttribute('aria-hidden', 'false');
     document.addEventListener('keydown', onContactSheetModalKeydown);
@@ -594,6 +722,7 @@
     contactSheetModal.hidden = true;
     contactSheetModal.setAttribute('aria-hidden', 'true');
     contactSheetModalImg.src = '';
+    resetContactSheetView();
     if (contactSheetObjectUrl) {
       URL.revokeObjectURL(contactSheetObjectUrl);
       contactSheetObjectUrl = null;
@@ -602,7 +731,19 @@
   }
 
   function onContactSheetModalKeydown(e) {
-    if (e.key === 'Escape') closeContactSheetModal();
+    if (e.key === 'Escape') {
+      closeContactSheetModal();
+    } else if (e.key === '+' || e.key === '=') {
+      setContactSheetZoom(contactSheetZoom + CONTACT_SHEET_ZOOM_STEP);
+    } else if (e.key === '-') {
+      setContactSheetZoom(contactSheetZoom - CONTACT_SHEET_ZOOM_STEP);
+    } else if (e.key === '0') {
+      setContactSheetZoom(1);
+    } else if (e.key === '1') {
+      setContactSheetActualSize();
+    } else if (e.key.toLowerCase() === 'f') {
+      toggleContactSheetFullpage();
+    }
   }
 
   contactSheetModal.querySelectorAll('[data-modal-close]').forEach(el => {

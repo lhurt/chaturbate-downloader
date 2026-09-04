@@ -29,6 +29,16 @@ def test_validate_username_rejects_traversalish_names():
             raise AssertionError(f"{name!r} should have been rejected")
 
 
+def test_index_renders_configured_modal_width(monkeypatch):
+    monkeypatch.setattr(webapp, "MODAL_WIDTH_PERCENT", 55)
+
+    client = TestClient(webapp.app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "--modal-width-percent: 55;" in response.text
+
+
 def test_downloads_list_excludes_split_temp_mp4_files(tmp_path, monkeypatch):
     (tmp_path / "alice_2026-04-27_10-00-00.mp4").write_bytes(b"done")
     (tmp_path / "alice_2026-04-27_10-00-00_video.mp4").write_bytes(b"video")

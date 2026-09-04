@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/tracked.css">
   <link rel="stylesheet" href="/static/tracked-toggle.css">
+  <style>:root { --modal-width-percent: {{ modal_width_percent }}; }</style>
 </head>
 <body>
 
@@ -29,10 +30,19 @@
 
   <div id="contact-sheet-modal" class="modal" hidden aria-hidden="true">
     <div class="modal__backdrop" data-modal-close></div>
-    <div class="modal__dialog" role="dialog" aria-modal="true" aria-label="Contact sheet">
+    <div class="modal__dialog" id="contact-sheet-modal-dialog" role="dialog" aria-modal="true" aria-label="Contact sheet">
       <button type="button" class="modal__close" data-modal-close aria-label="Close">&times;</button>
       <div class="modal__title" id="contact-sheet-modal-title"></div>
-      <div class="modal__body">
+      <div class="modal__toolbar">
+        <button type="button" class="btn btn--ghost btn--sm" id="contact-sheet-zoom-out" aria-label="Zoom out">&minus;</button>
+        <span class="modal__zoom-level" id="contact-sheet-zoom-level">100%</span>
+        <button type="button" class="btn btn--ghost btn--sm" id="contact-sheet-zoom-in" aria-label="Zoom in">+</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="contact-sheet-zoom-reset">Reset</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="contact-sheet-zoom-actual">100%</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="contact-sheet-fullpage" aria-pressed="false">Full page</button>
+        <span class="modal__natural-size" id="contact-sheet-natural-size"></span>
+      </div>
+      <div class="modal__body modal__body--zoomable" id="contact-sheet-modal-body">
         <img id="contact-sheet-modal-img" alt="">
       </div>
     </div>

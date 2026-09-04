@@ -144,6 +144,7 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `CONTACT_SHEET_TILE_WIDTH` | `160`        | Width in pixels of each thumbnail tile |
 | `CONTACT_SHEET_COLUMNS` | `10`            | Number of tiles per row in the contact sheet grid |
 | `CONTACT_SHEET_AUTO_GENERATE` | `false`  | Generate contact sheets automatically for every completed download, including backfilling existing files that don't have one yet, instead of only on first view |
+| `MODAL_WIDTH_PERCENT` | `80`            | Width of the contact sheet / video player modal dialogs, as a percentage of page width (clamped to 20-100) |
 
 Example:
 

@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from downloader import DownloadManager
 from downloader.auto_download import AutoDownloadScheduler
@@ -69,6 +70,8 @@ CONTACT_SHEET_COLUMNS = int(os.getenv("CONTACT_SHEET_COLUMNS", "10"))
 CONTACT_SHEET_AUTO_GENERATE = os.getenv(
     "CONTACT_SHEET_AUTO_GENERATE", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+
+MODAL_WIDTH_PERCENT = max(20, min(100, int(os.getenv("MODAL_WIDTH_PERCENT", "80"))))
 
 
 def _validate_username(username: str) -> str:
@@ -195,15 +198,18 @@ app.add_middleware(
 # Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
 
 # ─── Web UI ────────────────────────────────────────────────
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+async def index(request: Request):
     """Serve the main web UI."""
-    html_path = TEMPLATE_DIR / "index.html"
-    return HTMLResponse(content=html_path.read_text())
+    return templates.TemplateResponse(
+        request, "index.html", {"modal_width_percent": MODAL_WIDTH_PERCENT}
+    )
 
 
 # ─── API Endpoints ─────────────────────────────────────────
