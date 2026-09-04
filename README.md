@@ -14,9 +14,12 @@ This project is intended for personal, local use only.
 
 - **Web UI** — start, monitor, and stop downloads from the browser.
 - **Tracked streamers dashboard** — keeps a SQLite-backed registry of every
-  username you've downloaded. The server polls room status every 60 seconds
-  and shows live thumbnails, online/offline state, and quick download or
-  delete actions.
+  username you've downloaded, plus any you've added manually. The server
+  polls room status every 60 seconds and shows live thumbnails,
+  online/offline state, and quick download or delete actions.
+- **Add a streamer to track** — use the `Add` box above the tracked list to
+  start tracking a username directly, even while they're offline, so you can
+  enable auto record ahead of time instead of waiting for a manual download.
 - **Per-streamer auto recording** — enable `Auto record` on a tracked card to
   start recording automatically whenever the background poller finds that
   streamer live, even when the browser is closed.
@@ -273,6 +276,7 @@ All endpoints are under the FastAPI app at `/`.
 | Method | Path                               | Description                                    |
 | ------ | ---------------------------------- | ---------------------------------------------- |
 | GET    | `/api/tracked`                     | List all tracked streamers with status, last-seen times, and active-download flags |
+| POST   | `/api/tracked?username=...`        | Track a username directly, without starting a download (409 if already tracked) |
 | PATCH  | `/api/tracked/{username}/auto-download` | Enable or disable automatic recording with the `enabled` query parameter |
 | DELETE | `/api/tracked/{username}`          | Remove a username from the tracked registry    |
 | GET    | `/api/thumbnail/{username}`        | Fetch the current room thumbnail (cached for 30 seconds) |

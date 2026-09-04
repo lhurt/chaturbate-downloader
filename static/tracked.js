@@ -4,6 +4,7 @@
   const POLL_INTERVAL = 30000;
   const API = {
     list:        '/api/tracked',
+    add:         (username) => `/api/tracked?username=${encodeURIComponent(username)}`,
     delete:      (username) => `/api/tracked/${encodeURIComponent(username)}`,
     thumbnail:   (username) => `/api/thumbnail/${encodeURIComponent(username)}`,
     startDownload: (username) => `/api/download/start?username=${encodeURIComponent(username)}&output_format=mp4`,
@@ -15,6 +16,9 @@
   const emptyEl = $('#tracked-empty');
   const countEl = $('#tracked-count');
   const refreshBtn = $('#tracked-refresh');
+  const addForm = $('#tracked-add-form');
+  const addInput = $('#tracked-add-username');
+  const addBtn = $('#tracked-add-btn');
 
   if (!listEl || !countEl) return;
 
@@ -68,9 +72,9 @@
     const lastSeen = row.last_seen_online_at
       ? `last live ${formatRelative(row.last_seen_online_at)}`
       : 'never seen live';
-    const lastDl = row.last_downloaded_at
+    const lastDl = row.download_count > 0
       ? `last download ${formatRelative(row.last_downloaded_at)}`
-      : '';
+      : 'never downloaded';
     const downloadDisabled = isDownloading || !isLive;
 
     const profileUrl = `https://chaturbate.com/${encodeURIComponent(row.username)}/`;
@@ -89,7 +93,7 @@
         <div class="tracked-card__body">
           <div class="tracked-card__title">
             <a class="tracked-card__name" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">@${escapeHtml(row.username)}</a>
-            <span class="tracked-card__count" title="Times downloaded">${row.download_count || 1}×</span>
+            <span class="tracked-card__count" title="Times downloaded">${row.download_count || 0}×</span>
           </div>
           <div class="tracked-card__meta" title="${escapeHtml(formatAbsolute(row.last_seen_online_at))}">${escapeHtml(lastSeen)}</div>
           ${lastDl ? `<div class="tracked-card__meta">${escapeHtml(lastDl)}</div>` : ''}
@@ -162,6 +166,20 @@
     }
   }
 
+  async function addTracked(username) {
+    if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Adding…'; }
+    try {
+      await apiCall(API.add(username), { method: 'POST' });
+      if (addInput) addInput.value = '';
+      lastRendered = null;
+      fetchTracked();
+    } catch (err) {
+      alert(`Failed to add: ${err.message}`);
+    } finally {
+      if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'Add'; }
+    }
+  }
+
   async function deleteTracked(username) {
     if (!confirm(`Remove @${username} from tracked list?`)) return;
     try {
@@ -214,6 +232,14 @@
     refreshBtn.addEventListener('click', () => {
       lastRendered = null;
       fetchTracked();
+    });
+  }
+
+  if (addForm) {
+    addForm.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const username = addInput?.value.trim().toLowerCase();
+      if (username) addTracked(username);
     });
   }
 

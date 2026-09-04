@@ -1,3 +1,25 @@
+.tracked-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tracked-add input {
+  flex: 1;
+  min-width: 0;
+  border: var(--border-w) solid var(--border);
+  background: var(--surface);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+}
+
+.tracked-add input:focus-visible {
+  box-shadow: var(--shadow-sm);
+}
+
 .tracked-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));

@@ -65,6 +65,19 @@ class Tracker:
             except Exception:
                 pass
 
+    def _add_sync(self, username: str) -> bool:
+        now = time.time()
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO tracked (username, first_added_at, last_downloaded_at, download_count)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(username) DO NOTHING
+                """,
+                (username, now, now),
+            )
+        return cur.rowcount > 0
+
     def _upsert_download_sync(self, username: str) -> None:
         now = time.time()
         with self._lock:
@@ -150,6 +163,12 @@ class Tracker:
                     """,
                     (status, now, username),
                 )
+
+    async def add(self, username: str) -> bool:
+        """Track a username without recording a download. Returns False if already tracked."""
+        return await asyncio.get_running_loop().run_in_executor(
+            None, self._add_sync, username
+        )
 
     async def upsert_download(self, username: str) -> None:
         await asyncio.get_running_loop().run_in_executor(

@@ -440,6 +440,31 @@ async def list_tracked():
     return {"tracked": rows, "polled_every_seconds": POLL_INTERVAL_SECONDS}
 
 
+@app.post("/api/tracked")
+async def add_tracked(request: Request, username: str):
+    """Track a streamer without downloading, e.g. to enable auto-record while offline."""
+    _require_trusted_origin(request)
+    username = _validate_username(username)
+    added = await tracker.add(username)
+    if not added:
+        raise HTTPException(status_code=409, detail="Username already tracked")
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0),
+            follow_redirects=True,
+            headers={**DEFAULT_HEADERS, "Referer": "https://chaturbate.com/"},
+            **proxy_kwargs(),
+        ) as client:
+            status = await fetch_room_status(client, username)
+            if status is not None:
+                await tracker.update_status(username, status)
+    except Exception as exc:
+        logger.debug("initial status fetch failed for %s: %s", username, exc)
+
+    return {"status": "added", "username": username}
+
+
 @app.delete("/api/tracked/{username}")
 async def delete_tracked(request: Request, username: str):
     _require_trusted_origin(request)
