@@ -1,7 +1,7 @@
 services:
-  cb-stream-saver-dev:
+  cb-stream-saver:
     build: .
-    container_name: cb-stream-saver-dev
+    container_name: cb-stream-saver
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
