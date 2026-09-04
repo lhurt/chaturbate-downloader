@@ -19,6 +19,13 @@
   let pollTimer = null;
   const generatingContactSheets = new Set();
 
+  const EYE_ICON_SVG = `
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  `;
+
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -530,14 +537,17 @@
           <div class="contact-sheet-group" data-filename="${escapeHtml(file.filename)}">
             <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-generate" ${generating ? 'disabled' : ''}>${generating ? 'Generating…' : 'Contact sheet'}</button>
             <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-view" aria-label="View contact sheet" title="${viewable ? 'View contact sheet' : 'Generate the contact sheet first'}" ${viewable ? '' : 'disabled'}>
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
-                <circle cx="12" cy="12" r="3"/>
-              </svg>
+              ${EYE_ICON_SVG}
             </button>
           </div>`;
           })() : ''}
-          ${file.filename ? `<a class="btn btn--ghost btn--sm" href="${API.fileDownload(file.filename)}" download>Download</a>` : ''}
+          ${file.filename ? `
+          <div class="download-group">
+            <a class="btn btn--ghost btn--sm" href="${API.fileDownload(file.filename)}" download>Download</a>
+            <button type="button" class="btn btn--ghost btn--sm btn-play-video" data-filename="${escapeHtml(file.filename)}" aria-label="Play video" title="Play video">
+              ${EYE_ICON_SVG}
+            </button>
+          </div>` : ''}
           <button class="btn btn--danger-ghost btn--sm btn-delete" data-filename="${escapeHtml(file.filename || '')}" aria-label="Delete ${escapeHtml(file.filename || '')}">Delete</button>
         </div>
       `;
@@ -554,6 +564,13 @@
         });
         sheetGroup.querySelector('.btn-contact-sheet-view').addEventListener('click', () => {
           handleViewContactSheet(sheetGroup);
+        });
+      }
+
+      const playBtn = row.querySelector('.btn-play-video');
+      if (playBtn) {
+        playBtn.addEventListener('click', () => {
+          openVideoModal(playBtn.dataset.filename);
         });
       }
 
@@ -590,6 +607,36 @@
 
   contactSheetModal.querySelectorAll('[data-modal-close]').forEach(el => {
     el.addEventListener('click', closeContactSheetModal);
+  });
+
+  const videoModal = document.getElementById('video-modal');
+  const videoModalPlayer = document.getElementById('video-modal-player');
+  const videoModalTitle = document.getElementById('video-modal-title');
+
+  function openVideoModal(filename) {
+    videoModalTitle.textContent = filename;
+    videoModalPlayer.src = API.fileDownload(filename);
+    videoModal.hidden = false;
+    videoModal.setAttribute('aria-hidden', 'false');
+    videoModalPlayer.play().catch(() => {});
+    document.addEventListener('keydown', onVideoModalKeydown);
+  }
+
+  function closeVideoModal() {
+    videoModal.hidden = true;
+    videoModal.setAttribute('aria-hidden', 'true');
+    videoModalPlayer.pause();
+    videoModalPlayer.removeAttribute('src');
+    videoModalPlayer.load();
+    document.removeEventListener('keydown', onVideoModalKeydown);
+  }
+
+  function onVideoModalKeydown(e) {
+    if (e.key === 'Escape') closeVideoModal();
+  }
+
+  videoModal.querySelectorAll('[data-modal-close]').forEach(el => {
+    el.addEventListener('click', closeVideoModal);
   });
 
   async function fetchContactSheetBlob(group) {

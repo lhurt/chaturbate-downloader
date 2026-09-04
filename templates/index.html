@@ -38,6 +38,17 @@
     </div>
   </div>
 
+  <div id="video-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal__backdrop" data-modal-close></div>
+    <div class="modal__dialog" role="dialog" aria-modal="true" aria-label="Video playback">
+      <button type="button" class="modal__close" data-modal-close aria-label="Close">&times;</button>
+      <div class="modal__title" id="video-modal-title"></div>
+      <div class="modal__body">
+        <video id="video-modal-player" controls></video>
+      </div>
+    </div>
+  </div>
+
   <div class="app">
 
     <header class="header">
