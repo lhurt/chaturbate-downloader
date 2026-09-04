@@ -23,7 +23,7 @@ from fastapi.templating import Jinja2Templates
 
 from downloader import DownloadManager
 from downloader.auto_download import AutoDownloadScheduler
-from downloader.converter import generate_contact_sheet
+from downloader.converter import _probe_duration, generate_contact_sheet
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
 from downloader.http_client import proxy_kwargs
 from downloader.tracker import Tracker
@@ -380,28 +380,42 @@ async def get_contact_sheet(filename: str):
     return FileResponse(path=str(_contact_sheet_path(file_path)), media_type="image/jpeg")
 
 
+_duration_cache: dict[str, Optional[float]] = {}
+
+
+async def _get_duration_seconds(file_path: Path) -> Optional[float]:
+    """Probe a completed file's duration, cached by filename (files are immutable once done)."""
+    key = file_path.name
+    if key not in _duration_cache:
+        _duration_cache[key] = await asyncio.to_thread(_probe_duration, str(file_path))
+    return _duration_cache[key]
+
+
 @app.get("/api/downloads/list")
 async def list_downloaded_files():
     """List all downloaded files."""
+    media_files = [f for f in DOWNLOADS_DIR.iterdir() if _is_completed_media_file(f)]
+    durations = await asyncio.gather(*(_get_duration_seconds(f) for f in media_files))
+
     files = []
-    for f in DOWNLOADS_DIR.iterdir():
-        if _is_completed_media_file(f):
-            stem = f.stem
-            username = _username_from_completed_stem(stem)
-            st = f.stat()
-            has_contact_sheet = _contact_sheet_path(f).exists()
-            if not has_contact_sheet:
-                _schedule_contact_sheet(f)
-            files.append(
-                {
-                    "filename": f.name,
-                    "username": username,
-                    "size": st.st_size,
-                    "size_mb": round(st.st_size / (1024 * 1024), 2),
-                    "format": f.suffix.lstrip("."),
-                    "has_contact_sheet": has_contact_sheet,
-                }
-            )
+    for f, duration in zip(media_files, durations):
+        stem = f.stem
+        username = _username_from_completed_stem(stem)
+        st = f.stat()
+        has_contact_sheet = _contact_sheet_path(f).exists()
+        if not has_contact_sheet:
+            _schedule_contact_sheet(f)
+        files.append(
+            {
+                "filename": f.name,
+                "username": username,
+                "size": st.st_size,
+                "size_mb": round(st.st_size / (1024 * 1024), 2),
+                "format": f.suffix.lstrip("."),
+                "has_contact_sheet": has_contact_sheet,
+                "duration_seconds": duration,
+            }
+        )
     return sorted(files, key=lambda x: x["filename"])
 
 
@@ -413,6 +427,7 @@ async def delete_file(request: Request, filename: str):
     if not file_path.exists() or not _is_completed_media_file(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     file_path.unlink()
+    _duration_cache.pop(filename, None)
     return {"status": "deleted", "filename": filename}
 
 

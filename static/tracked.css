@@ -259,7 +259,7 @@
 
 .tracked-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 96px 108px 48px auto;
+  grid-template-columns: 40px minmax(0, 1fr) 96px 108px 48px 148px;
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -430,7 +430,7 @@
 
 @media (max-width: 640px) {
   .tracked-row {
-    grid-template-columns: 36px minmax(0, 1fr) auto auto;
+    grid-template-columns: 36px minmax(0, 1fr) 90px 148px;
   }
 
   .tracked-row__seen,
