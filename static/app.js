@@ -35,6 +35,7 @@
   const btnStart       = $('#btn-start');
   const btnStopAll     = $('#btn-stop-all');
   const activeContainer = $('#active-downloads');
+  const activeViewToggle = $('#active-view-toggle');
   const completedContainer = $('#completed-downloads');
   const activeEmpty    = $('#active-empty');
   const completedEmpty = $('#completed-empty');
@@ -889,6 +890,36 @@
   btnStopAll.addEventListener('click', () => {
     stopAll();
   });
+
+  // --- Active downloads view toggle ---
+  const ACTIVE_VIEW_KEY = 'active:view';
+
+  function applyActiveView(view) {
+    activeContainer.classList.toggle('downloads-grid--compact', view === 'compact');
+    if (activeViewToggle) {
+      activeViewToggle.querySelectorAll('[data-view-set]').forEach((btn) => {
+        const active = btn.dataset.viewSet === view;
+        btn.classList.toggle('theme-toggle__btn--active', active);
+        btn.setAttribute('aria-pressed', String(active));
+      });
+    }
+  }
+
+  if (activeViewToggle) {
+    let storedView = 'cards';
+    try {
+      storedView = localStorage.getItem(ACTIVE_VIEW_KEY) === 'compact' ? 'compact' : 'cards';
+    } catch {}
+    applyActiveView(storedView);
+
+    activeViewToggle.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-view-set]');
+      if (!btn) return;
+      const view = btn.dataset.viewSet;
+      applyActiveView(view);
+      try { localStorage.setItem(ACTIVE_VIEW_KEY, view); } catch {}
+    });
+  }
 
   // --- Initialize ---
   startPolling();

@@ -20,11 +20,14 @@
   const addInput = $('#tracked-add-username');
   const addBtn = $('#tracked-add-btn');
   const viewToggle = $('#tracked-view-toggle');
+  const listHeadEl = $('#tracked-list-head');
 
   if (!listEl || !countEl) return;
 
   let pollTimer = null;
   let lastRendered = null;
+  let lastRows = [];
+  let currentView = 'grid';
 
   const VIEW_STORAGE_KEY = 'tracked:view';
 
@@ -37,7 +40,9 @@
   }
 
   function applyView(view) {
-    listEl.classList.toggle('tracked-grid--compact', view === 'compact');
+    currentView = view;
+    listEl.classList.toggle('tracked-grid--rows', view === 'compact');
+    if (listHeadEl) listHeadEl.hidden = view !== 'compact';
     if (viewToggle) {
       viewToggle.querySelectorAll('[data-view-set]').forEach((btn) => {
         const active = btn.dataset.viewSet === view;
@@ -50,6 +55,8 @@
   function setView(view) {
     applyView(view);
     try { localStorage.setItem(VIEW_STORAGE_KEY, view); } catch {}
+    lastRendered = null;
+    render(lastRows);
   }
 
   function escapeHtml(str) {
@@ -148,23 +155,68 @@
     `;
   }
 
+  function renderRow(row) {
+    const isLive = row.last_status === 'public';
+    const isDownloading = !!row.downloading;
+    const lastSeen = row.last_seen_online_at ? formatRelative(row.last_seen_online_at) : 'never';
+    const downloadDisabled = isDownloading || !isLive;
+    const profileUrl = `https://chaturbate.com/${encodeURIComponent(row.username)}/`;
+
+    return `
+      <div class="tracked-row${isLive || isDownloading ? ' tracked-row--live' : ''}" data-username="${escapeHtml(row.username)}">
+        <a class="tracked-row__thumb" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer" tabindex="-1">
+          <img loading="lazy"
+               alt=""
+               src="${API.thumbnail(row.username)}"
+               onerror="this.classList.add('tracked-row__thumb-img--missing'); this.removeAttribute('src');">
+        </a>
+        <a class="tracked-row__name" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">
+          <span>@${escapeHtml(row.username)}</span>
+          <span class="tracked-row__count" title="Times downloaded">${row.download_count || 0}×</span>
+        </a>
+        <span class="tracked-row__status">${statusPill(row)}</span>
+        <span class="tracked-row__seen" title="${escapeHtml(formatAbsolute(row.last_seen_online_at))}">${escapeHtml(lastSeen)}</span>
+        <label class="tracked-row__auto" title="Start recording automatically whenever this streamer is live">
+          <input type="checkbox"
+                 data-auto-download
+                 ${row.auto_download ? 'checked' : ''}>
+          <span class="tracked-card__switch" aria-hidden="true"><span></span></span>
+        </label>
+        <div class="tracked-row__actions">
+          <button type="button"
+                  class="tracked-card__btn tracked-card__btn--primary"
+                  data-action="download"
+                  ${downloadDisabled ? 'disabled' : ''}>
+            ${isDownloading ? 'Recording…' : (isLive ? 'Download' : 'Offline')}
+          </button>
+          <button type="button"
+                  class="tracked-card__btn tracked-card__btn--ghost"
+                  data-action="delete"
+                  title="Remove from tracked list">×</button>
+        </div>
+      </div>
+    `;
+  }
+
   function render(rows) {
-    const sig = JSON.stringify(rows.map((r) => [
+    lastRows = rows;
+    const sig = JSON.stringify([currentView, rows.map((r) => [
       r.username, r.last_status, r.last_seen_online_at, r.downloading, r.download_count,
       r.auto_download,
-    ]));
+    ])]);
     if (sig === lastRendered) return;
     lastRendered = sig;
 
     countEl.textContent = String(rows.length);
     if (rows.length === 0) {
       emptyEl.hidden = false;
-      const cards = listEl.querySelectorAll('.tracked-card');
+      const cards = listEl.querySelectorAll('[data-username]');
       cards.forEach((c) => c.remove());
       return;
     }
     emptyEl.hidden = true;
-    listEl.innerHTML = rows.map(renderCard).join('');
+    const renderFn = currentView === 'compact' ? renderRow : renderCard;
+    listEl.innerHTML = rows.map(renderFn).join('');
   }
 
   async function fetchTracked() {
@@ -180,7 +232,7 @@
   }
 
   async function startDownload(username) {
-    const card = listEl.querySelector(`.tracked-card[data-username="${CSS.escape(username)}"]`);
+    const card = listEl.querySelector(`[data-username="${CSS.escape(username)}"]`);
     const btn = card?.querySelector('[data-action="download"]');
     if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
     try {
@@ -241,7 +293,7 @@
   listEl.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-action]');
     if (!btn) return;
-    const card = btn.closest('.tracked-card');
+    const card = btn.closest('[data-username]');
     const username = card?.dataset.username;
     if (!username) return;
     if (btn.dataset.action === 'download') startDownload(username);
@@ -251,7 +303,7 @@
   listEl.addEventListener('change', (ev) => {
     const input = ev.target.closest('[data-auto-download]');
     if (!input) return;
-    const username = input.closest('.tracked-card')?.dataset.username;
+    const username = input.closest('[data-username]')?.dataset.username;
     if (username) updateAutoDownload(username, input);
   });
 

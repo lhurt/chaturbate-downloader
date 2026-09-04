@@ -899,6 +899,97 @@ body {
   font-size: 13px;
 }
 
+/* ── Compact active-downloads view ── */
+
+.downloads-grid--compact {
+  gap: 6px;
+}
+
+.downloads-grid--compact .download-card {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 16px;
+}
+
+.downloads-grid--compact .download-card__header {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.downloads-grid--compact .download-card__user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.downloads-grid--compact .download-card__name {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.downloads-grid--compact .download-card__tags {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.downloads-grid--compact .tag,
+.downloads-grid--compact .download-card__live-badge {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.downloads-grid--compact .status-strip {
+  flex: 0 1 180px;
+  padding: 4px 10px;
+  gap: 8px;
+}
+
+.downloads-grid--compact .status-strip__track {
+  display: none;
+}
+
+.downloads-grid--compact .download-card__stats {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 16px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.downloads-grid--compact .stat {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.downloads-grid--compact .stat__label {
+  display: none;
+}
+
+.downloads-grid--compact .stat__value {
+  font-size: 12px;
+}
+
+.downloads-grid--compact .stat:has([data-field="segments"]) {
+  display: none;
+}
+
+.downloads-grid--compact .download-card__actions {
+  margin-left: auto;
+}
+
+.downloads-grid--compact .download-card__error,
+.downloads-grid--compact .download-card__warning {
+  flex: 1 1 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .downloads-list {
   display: flex;
   flex-direction: column;
