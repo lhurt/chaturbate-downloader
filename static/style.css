@@ -162,6 +162,20 @@ body {
   margin: 0;
 }
 
+.card__label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.card__label-remark {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+}
+
 .section__header {
   display: flex;
   align-items: center;
@@ -203,7 +217,7 @@ body {
 
 .controls-form {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) auto auto auto;
+  grid-template-columns: minmax(0, 2fr) auto auto;
   gap: 16px;
   align-items: end;
 }
@@ -263,22 +277,6 @@ body {
 .input-group input[type="number"] {
   border: var(--border-w) solid var(--border);
   background: var(--surface);
-}
-
-.format-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 12px;
-  border: var(--border-w) solid var(--border);
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  line-height: 1;
-  box-shadow: var(--shadow-sm);
 }
 
 ::placeholder {

@@ -342,6 +342,10 @@
   color: var(--ink-muted);
 }
 
+.tracked-row--head .tracked-row__status {
+  text-align: center;
+}
+
 .tracked-row--live {
   box-shadow: inset 3px 0 0 var(--live);
 }
@@ -408,6 +412,7 @@
 .tracked-row__status {
   min-width: 0;
   display: flex;
+  justify-content: center;
 }
 
 .tracked-row__status .tracked__pill {
