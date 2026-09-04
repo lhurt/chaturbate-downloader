@@ -140,6 +140,9 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `PORT`         | `8000`                   | Port                                          |
 | `CORS_ORIGINS` | `http://localhost:8000,http://127.0.0.1:8000,http://[::1]:8000` | Comma-separated list of allowed UI origins for CORS and state-changing requests |
 | `CB_PROXY_URL` | unset                    | Optional HTTP proxy URL for Chaturbate and HLS CDN requests |
+| `CONTACT_SHEET_INTERVAL_SECONDS` | `60`   | Seconds between thumbnail frames in a generated contact sheet |
+| `CONTACT_SHEET_TILE_WIDTH` | `160`        | Width in pixels of each thumbnail tile |
+| `CONTACT_SHEET_COLUMNS` | `10`            | Number of tiles per row in the contact sheet grid |
 
 Example:
 

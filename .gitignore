@@ -5,6 +5,7 @@ __pycache__/
 downloads/
 *.egg-info/
 dist/
+compose.override.yaml
 .env
 .idea/
 .DS_Store

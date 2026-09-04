@@ -11,11 +11,13 @@
     fileDownload: (filename) => `/api/downloads/file/${encodeURIComponent(filename)}`,
     listFiles:    '/api/downloads/list',
     deleteFile:   (filename)  => `/api/downloads/${encodeURIComponent(filename)}`,
+    contactSheet: (filename) => `/api/downloads/contact-sheet/${encodeURIComponent(filename)}`,
   };
 
   let activeDownloads = {};
   let completedFiles = [];
   let pollTimer = null;
+  const generatingContactSheets = new Set();
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
@@ -521,6 +523,20 @@
           </div>
         </div>
         <div class="file-row__actions">
+          ${file.filename ? (() => {
+            const generating = generatingContactSheets.has(file.filename);
+            const viewable = file.has_contact_sheet && !generating;
+            return `
+          <div class="contact-sheet-group" data-filename="${escapeHtml(file.filename)}">
+            <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-generate" ${generating ? 'disabled' : ''}>${generating ? 'Generating…' : 'Contact sheet'}</button>
+            <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-view" aria-label="View contact sheet" title="${viewable ? 'View contact sheet' : 'Generate the contact sheet first'}" ${viewable ? '' : 'disabled'}>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>`;
+          })() : ''}
           ${file.filename ? `<a class="btn btn--ghost btn--sm" href="${API.fileDownload(file.filename)}" download>Download</a>` : ''}
           <button class="btn btn--danger-ghost btn--sm btn-delete" data-filename="${escapeHtml(file.filename || '')}" aria-label="Delete ${escapeHtml(file.filename || '')}">Delete</button>
         </div>
@@ -531,8 +547,95 @@
         armDeleteButton(e.currentTarget, fname);
       });
 
+      const sheetGroup = row.querySelector('.contact-sheet-group');
+      if (sheetGroup) {
+        sheetGroup.querySelector('.btn-contact-sheet-generate').addEventListener('click', () => {
+          handleGenerateContactSheet(sheetGroup);
+        });
+        sheetGroup.querySelector('.btn-contact-sheet-view').addEventListener('click', () => {
+          handleViewContactSheet(sheetGroup);
+        });
+      }
+
       completedContainer.appendChild(row);
     });
+  }
+
+  const contactSheetModal = document.getElementById('contact-sheet-modal');
+  const contactSheetModalImg = document.getElementById('contact-sheet-modal-img');
+  const contactSheetModalTitle = document.getElementById('contact-sheet-modal-title');
+  let contactSheetObjectUrl = null;
+
+  function openContactSheetModal(filename) {
+    contactSheetModalTitle.textContent = filename;
+    contactSheetModal.hidden = false;
+    contactSheetModal.setAttribute('aria-hidden', 'false');
+    document.addEventListener('keydown', onContactSheetModalKeydown);
+  }
+
+  function closeContactSheetModal() {
+    contactSheetModal.hidden = true;
+    contactSheetModal.setAttribute('aria-hidden', 'true');
+    contactSheetModalImg.src = '';
+    if (contactSheetObjectUrl) {
+      URL.revokeObjectURL(contactSheetObjectUrl);
+      contactSheetObjectUrl = null;
+    }
+    document.removeEventListener('keydown', onContactSheetModalKeydown);
+  }
+
+  function onContactSheetModalKeydown(e) {
+    if (e.key === 'Escape') closeContactSheetModal();
+  }
+
+  contactSheetModal.querySelectorAll('[data-modal-close]').forEach(el => {
+    el.addEventListener('click', closeContactSheetModal);
+  });
+
+  async function fetchContactSheetBlob(group) {
+    const filename = group.dataset.filename;
+    const genBtn = group.querySelector('.btn-contact-sheet-generate');
+    const viewBtn = group.querySelector('.btn-contact-sheet-view');
+    const wasViewable = !viewBtn.disabled;
+
+    generatingContactSheets.add(filename);
+    genBtn.disabled = true;
+    viewBtn.disabled = true;
+    genBtn.textContent = 'Generating…';
+
+    try {
+      const res = await fetch(API.contactSheet(filename));
+      if (!res.ok) throw new Error('Failed to load contact sheet');
+      const blob = await res.blob();
+      viewBtn.disabled = false;
+      viewBtn.title = 'View contact sheet';
+      return blob;
+    } catch (err) {
+      toast(`Could not generate contact sheet: ${err.message}`, 'error');
+      viewBtn.disabled = !wasViewable;
+      return null;
+    } finally {
+      generatingContactSheets.delete(filename);
+      genBtn.disabled = false;
+      genBtn.textContent = 'Contact sheet';
+    }
+  }
+
+  async function handleGenerateContactSheet(group) {
+    const blob = await fetchContactSheetBlob(group);
+    if (blob) toast('Contact sheet ready', 'success');
+  }
+
+  async function handleViewContactSheet(group) {
+    const filename = group.dataset.filename;
+    const blob = await fetchContactSheetBlob(group);
+    if (!blob) return;
+
+    const url = URL.createObjectURL(blob);
+    openContactSheetModal(filename);
+    contactSheetObjectUrl = url;
+    contactSheetModalImg.src = url;
+    contactSheetModalImg.alt = `Contact sheet for ${filename}`;
   }
 
   function createEmptyCompleted() {

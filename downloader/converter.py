@@ -8,6 +8,8 @@ import asyncio
 import logging
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,103 @@ def convert_to_mp4(input_file: str, output_mp4: str) -> bool:
     except Exception as exc:
         logger.error("Remux error: %s", exc)
         return False
+
+
+def _extract_thumbnail(
+    input_file: str, timestamp: float, tile_width: int, output_path: str
+) -> bool:
+    """Grab a single frame near `timestamp` using fast keyframe seeking.
+
+    Seeking before `-i` snaps to the nearest keyframe instead of decoding
+    every frame up to that point, so extraction time stays roughly constant
+    no matter how long the source recording is.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(timestamp),
+        "-i",
+        input_file,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "4",
+        "-vf",
+        f"scale={tile_width}:-1",
+        output_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.returncode == 0 and Path(output_path).exists()
+    except subprocess.TimeoutExpired:
+        logger.warning("Timed out extracting frame at %ss from %s", timestamp, input_file)
+        return False
+
+
+def generate_contact_sheet(
+    input_file: str,
+    output_jpg: str,
+    interval_seconds: int = 60,
+    tile_width: int = 160,
+    columns: int = 10,
+) -> bool:
+    """
+    Build a single contact-sheet JPEG containing one thumbnail frame per
+    `interval_seconds` of the input video, tiled into a grid.
+    """
+    if not _ffmpeg_available():
+        logger.error("ffmpeg not found in PATH.")
+        return False
+
+    duration = _probe_duration(input_file)
+    frame_count = max(1, int(duration // interval_seconds) + 1) if duration else 1
+
+    logger.info("Generating contact sheet %s -> %s", input_file, output_jpg)
+
+    with tempfile.TemporaryDirectory(prefix="contactsheet_") as tmpdir:
+        thumbs = []
+        for i in range(frame_count):
+            thumb_path = str(Path(tmpdir) / f"thumb_{i:04d}.jpg")
+            if _extract_thumbnail(input_file, i * interval_seconds, tile_width, thumb_path):
+                thumbs.append(thumb_path)
+
+        if not thumbs:
+            logger.error("No frames could be extracted for contact sheet: %s", input_file)
+            return False
+
+        cols = min(columns, len(thumbs))
+        rows = -(-len(thumbs) // cols)  # ceil division
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-pattern_type",
+            "glob",
+            "-i",
+            str(Path(tmpdir) / "thumb_*.jpg"),
+            "-vf",
+            f"tile={cols}x{rows}",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "4",
+            output_jpg,
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                logger.info("Contact sheet generated: %s", output_jpg)
+                return True
+            logger.error("ffmpeg contact sheet tiling failed: %s", result.stderr[-500:])
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("ffmpeg contact sheet tiling timed out for %s", input_file)
+            return False
+        except Exception as exc:
+            logger.error("Contact sheet error: %s", exc)
+            return False
 
 
 def mux_video_audio(

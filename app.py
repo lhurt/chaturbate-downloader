@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from downloader import DownloadManager
 from downloader.auto_download import AutoDownloadScheduler
+from downloader.converter import generate_contact_sheet
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
 from downloader.http_client import proxy_kwargs
 from downloader.tracker import Tracker
@@ -59,6 +60,10 @@ ALLOWED_ORIGIN_SET = {
     if origin.strip()
 }
 ALLOWED_ORIGINS = sorted(ALLOWED_ORIGIN_SET)
+
+CONTACT_SHEET_INTERVAL_SECONDS = int(os.getenv("CONTACT_SHEET_INTERVAL_SECONDS", "60"))
+CONTACT_SHEET_TILE_WIDTH = int(os.getenv("CONTACT_SHEET_TILE_WIDTH", "160"))
+CONTACT_SHEET_COLUMNS = int(os.getenv("CONTACT_SHEET_COLUMNS", "10"))
 
 
 def _validate_username(username: str) -> str:
@@ -302,6 +307,38 @@ async def download_file_by_name(filename: str):
     )
 
 
+_CONTACT_SHEET_LOCK = asyncio.Lock()
+
+
+@app.get("/api/downloads/contact-sheet/{filename}")
+async def get_contact_sheet(filename: str):
+    """Return a per-minute contact-sheet thumbnail for a completed recording,
+    generating and caching it next to the source file on first request."""
+    file_path = _safe_downloads_path(filename)
+    if not file_path.exists() or not _is_completed_media_file(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    sheet_path = file_path.with_name(file_path.stem + "_contactsheet.jpg")
+
+    if not sheet_path.exists():
+        async with _CONTACT_SHEET_LOCK:
+            if not sheet_path.exists():
+                ok = await asyncio.to_thread(
+                    generate_contact_sheet,
+                    str(file_path),
+                    str(sheet_path),
+                    CONTACT_SHEET_INTERVAL_SECONDS,
+                    CONTACT_SHEET_TILE_WIDTH,
+                    CONTACT_SHEET_COLUMNS,
+                )
+                if not ok:
+                    raise HTTPException(
+                        status_code=502, detail="Failed to generate contact sheet"
+                    )
+
+    return FileResponse(path=str(sheet_path), media_type="image/jpeg")
+
+
 @app.get("/api/downloads/list")
 async def list_downloaded_files():
     """List all downloaded files."""
@@ -311,6 +348,7 @@ async def list_downloaded_files():
             stem = f.stem
             username = _username_from_completed_stem(stem)
             st = f.stat()
+            has_contact_sheet = f.with_name(stem + "_contactsheet.jpg").exists()
             files.append(
                 {
                     "filename": f.name,
@@ -318,6 +356,7 @@ async def list_downloaded_files():
                     "size": st.st_size,
                     "size_mb": round(st.st_size / (1024 * 1024), 2),
                     "format": f.suffix.lstrip("."),
+                    "has_contact_sheet": has_contact_sheet,
                 }
             )
     return sorted(files, key=lambda x: x["filename"])

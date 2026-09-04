@@ -44,6 +44,23 @@ def test_downloads_list_excludes_split_temp_mp4_files(tmp_path, monkeypatch):
     ]
 
 
+def test_downloads_list_reports_has_contact_sheet(tmp_path, monkeypatch):
+    (tmp_path / "alice_2026-04-27_10-00-00.mp4").write_bytes(b"done")
+    (tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg").write_bytes(b"jpeg")
+    (tmp_path / "bob_2026-04-27_11-00-00.mp4").write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.get("/api/downloads/list")
+
+    assert response.status_code == 200
+    by_filename = {item["filename"]: item["has_contact_sheet"] for item in response.json()}
+    assert by_filename == {
+        "alice_2026-04-27_10-00-00.mp4": True,
+        "bob_2026-04-27_11-00-00.mp4": False,
+    }
+
+
 def test_exact_filename_download_returns_exact_file(tmp_path, monkeypatch):
     requested = tmp_path / "alice_2026-04-27_10-00-00.mp4"
     other = tmp_path / "alice_2026-04-27_11-00-00.mp4"
@@ -508,6 +525,153 @@ def test_refresh_overlap_dedupe_uses_token_insensitive_identity():
     new_url = "https://cdn.example/live/seg-1.m4s?token=new"
 
     assert hls_module._segment_identity(old_url) == hls_module._segment_identity(new_url)
+
+
+def test_generate_contact_sheet_builds_tile_filter_from_duration(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(converter_module, "_ffmpeg_available", lambda: True)
+    monkeypatch.setattr(converter_module, "_probe_duration", lambda _path: 725.0)
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        Path(cmd[-1]).write_bytes(b"jpeg")
+        return FakeResult()
+
+    monkeypatch.setattr(converter_module.subprocess, "run", fake_run)
+
+    output = tmp_path / "sheet.jpg"
+    ok = converter_module.generate_contact_sheet(str(tmp_path / "in.mp4"), str(output))
+
+    assert ok is True
+    assert output.exists()
+
+    # 725s at a 60s interval samples 13 frames (0..720), each via a fast
+    # keyframe seek, then a final call tiles them into a 10x2 grid.
+    extraction_calls = [c for c in calls if "-ss" in c]
+    assert len(extraction_calls) == 13
+
+    tile_cmd = calls[-1]
+    vf_index = tile_cmd.index("-vf") + 1
+    assert tile_cmd[vf_index] == "tile=10x2"
+
+
+def test_generate_contact_sheet_returns_false_without_ffmpeg(monkeypatch, tmp_path):
+    monkeypatch.setattr(converter_module, "_ffmpeg_available", lambda: False)
+
+    ok = converter_module.generate_contact_sheet(
+        str(tmp_path / "in.mp4"), str(tmp_path / "sheet.jpg")
+    )
+
+    assert ok is False
+
+
+def test_generate_contact_sheet_returns_false_on_ffmpeg_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(converter_module, "_ffmpeg_available", lambda: True)
+    monkeypatch.setattr(converter_module, "_probe_duration", lambda _path: None)
+
+    class FakeResult:
+        returncode = 1
+        stderr = "boom"
+
+    monkeypatch.setattr(converter_module.subprocess, "run", lambda *a, **k: FakeResult())
+
+    ok = converter_module.generate_contact_sheet(
+        str(tmp_path / "in.mp4"), str(tmp_path / "sheet.jpg")
+    )
+
+    assert ok is False
+
+
+def test_contact_sheet_endpoint_generates_and_caches(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    calls = []
+
+    def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+        calls.append((input_file, output_jpg, args))
+        Path(output_jpg).write_bytes(b"jpegbytes")
+        return True
+
+    monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+    client = TestClient(webapp.app)
+    response = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+
+    assert response.status_code == 200
+    assert response.content == b"jpegbytes"
+    assert len(calls) == 1
+
+
+def test_contact_sheet_endpoint_forwards_env_configured_options(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+    monkeypatch.setattr(webapp, "CONTACT_SHEET_INTERVAL_SECONDS", 30)
+    monkeypatch.setattr(webapp, "CONTACT_SHEET_TILE_WIDTH", 200)
+    monkeypatch.setattr(webapp, "CONTACT_SHEET_COLUMNS", 5)
+
+    calls = []
+
+    def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+        calls.append(args)
+        Path(output_jpg).write_bytes(b"jpegbytes")
+        return True
+
+    monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+    client = TestClient(webapp.app)
+    response = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+
+    assert response.status_code == 200
+    assert calls == [(30, 200, 5)]
+
+    sheet_path = tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg"
+    assert sheet_path.exists()
+
+    # Second request should reuse the cached file rather than regenerating.
+    response2 = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+    assert response2.status_code == 200
+    assert response2.content == b"jpegbytes"
+    assert len(calls) == 1
+
+
+def test_contact_sheet_endpoint_rejects_non_media_file(tmp_path, monkeypatch):
+    temp_track = tmp_path / "alice_2026-04-27_10-00-00_video.mp4"
+    temp_track.write_bytes(b"temp")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.get(f"/api/downloads/contact-sheet/{temp_track.name}")
+
+    assert response.status_code == 404
+
+
+def test_contact_sheet_endpoint_rejects_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.get("/api/downloads/contact-sheet/alice_2026-04-27_10-00-00.mp4")
+
+    assert response.status_code == 404
+
+
+def test_contact_sheet_endpoint_returns_502_on_generation_failure(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+    monkeypatch.setattr(webapp, "generate_contact_sheet", lambda *a, **k: False)
+
+    client = TestClient(webapp.app)
+    response = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+
+    assert response.status_code == 502
 
 
 def test_async_mux_cancellation_terminates_ffmpeg(monkeypatch, tmp_path):

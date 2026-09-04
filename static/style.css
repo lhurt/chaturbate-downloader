@@ -388,6 +388,76 @@ body {
   background: currentColor;
 }
 
+/* ── Modal / lightbox ── */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 10, 0.7);
+}
+
+.modal__dialog {
+  position: relative;
+  background: var(--surface);
+  border: var(--border-w) solid var(--border);
+  box-shadow: var(--shadow);
+  max-width: min(960px, 100%);
+  max-height: calc(100vh - 48px);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.modal__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border: var(--border-w) solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal__close:hover {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.modal__title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-muted);
+  padding-right: 32px;
+  word-break: break-all;
+}
+
+.modal__body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: var(--border-w) solid var(--border-thin);
+}
+
 /* ── Toast system ── */
 
 #toast-container {
@@ -814,6 +884,22 @@ body {
   display: flex;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.contact-sheet-group {
+  display: inline-flex;
+}
+
+.contact-sheet-group .btn-contact-sheet-view {
+  margin-left: -2px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.contact-sheet-group .btn-contact-sheet-view:hover,
+.contact-sheet-group .btn-contact-sheet-view:focus-visible {
+  position: relative;
+  z-index: 1;
 }
 
 .empty-state {

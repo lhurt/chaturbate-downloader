@@ -27,6 +27,17 @@
 
   <div id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
+  <div id="contact-sheet-modal" class="modal" hidden aria-hidden="true">
+    <div class="modal__backdrop" data-modal-close></div>
+    <div class="modal__dialog" role="dialog" aria-modal="true" aria-label="Contact sheet">
+      <button type="button" class="modal__close" data-modal-close aria-label="Close">&times;</button>
+      <div class="modal__title" id="contact-sheet-modal-title"></div>
+      <div class="modal__body">
+        <img id="contact-sheet-modal-img" alt="">
+      </div>
+    </div>
+  </div>
+
   <div class="app">
 
     <header class="header">
