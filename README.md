@@ -326,17 +326,24 @@ chaturbate/
 │   ├── hls.py             # LL-HLS downloader (video + audio, token refresh)
 │   ├── converter.py       # ffmpeg remux + video/audio mux with A/V sync
 │   ├── manager.py         # DownloadManager: tasks, state, lifecycle
-│   └── tracker.py         # SQLite-backed registry of tracked streamers
+│   ├── tracker.py         # SQLite-backed registry of tracked streamers
+│   ├── cleanup.py         # Orphaned temp-track / contact-sheet filesystem sweeps
+│   ├── progress.py        # DownloadProgress + the video/audio startup barrier
+│   ├── redact.py          # Shared token-redaction helpers for logs/debug output
+│   └── http_client.py     # Shared httpx proxy_kwargs()
 ├── templates/
 │   └── index.html         # Single-page UI
 ├── static/
+│   ├── util.js            # Shared helpers (apiCall, escapeHtml) for app.js/tracked.js
 │   ├── app.js             # Frontend logic (polling, forms, file list)
 │   ├── tracked.js         # Tracked-streamer dashboard (cards, thumbnails, status)
 │   ├── tracked.css        # Styles for the tracked streamers section
 │   ├── theme.js           # Light / Auto / Dark theme controls
 │   └── style.css
 ├── tests/
-│   └── test_backend.py    # Backend safety/regression tests
+│   ├── test_backend.py    # Backend safety/regression tests
+│   ├── test_auto_download.py
+│   └── test_cleanup.py    # downloader.cleanup, tested standalone (no FastAPI)
 ├── downloads/             # Output directory (gitignored)
 ├── pyproject.toml         # uv / PEP 621 project definition
 ├── setup.sh               # One-shot environment check and install
@@ -352,7 +359,7 @@ chaturbate/
   by the downloader, or the token gets burned. API responses and logs redact
   token-bearing URLs where possible.
 - **A/V drift.** Video and audio come from separate HLS playlists and
-  occasionally start at slightly different timestamps. `mux_video_audio`
+  occasionally start at slightly different timestamps. `mux_video_audio_async`
   probes both with `ffprobe` for diagnostics and uses `-copyts` /
   `-start_at_zero` so ffmpeg preserves their relative timestamps.
 - **Mux fallback.** If muxing fails, the video-only file is kept and

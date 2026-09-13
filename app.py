@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 
 from downloader import DownloadManager
 from downloader.auto_download import AutoDownloadScheduler
+from downloader.cleanup import cleanup_orphaned_contact_sheets, cleanup_orphaned_temp_files
 from downloader.converter import _probe_duration, generate_contact_sheet
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
 from downloader.hls import _abs_url, _select_best_variant
@@ -58,10 +59,6 @@ USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 COMPLETED_STEM_RE = re.compile(
     r"^(?P<username>.+)_(?P<timestamp>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$"
 )
-TEMP_TRACK_STEM_RE = re.compile(
-    r"^(?P<username>.+)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(?:video|audio)$"
-)
-CONTACT_SHEET_STEM_RE = re.compile(r"^(?P<source_stem>.+)_contactsheet$")
 
 ALLOWED_ORIGIN_SET = {
     origin.strip().rstrip("/")
@@ -109,29 +106,8 @@ def _is_completed_media_file(path: Path) -> bool:
 
 
 def _cleanup_orphaned_temp_files() -> list[str]:
-    """Remove leftover `_video.mp4`/`_audio.mp4` temp tracks with no owning
-    download. These are produced by HLSDownloader mid-download and are only
-    ever renamed/removed by a normal finalize(); a crash, force-cancel after
-    the stop watchdog, or ungraceful shutdown skips that step and leaves them
-    behind. They're intentionally hidden from every read endpoint, so this is
-    the only path that reclaims them. Safe to call any time: usernames with
-    an active reservation or task are left untouched."""
-    active = manager.active_usernames()
-    removed = []
-    for f in DOWNLOADS_DIR.iterdir():
-        if not f.is_file() or f.suffix != ".mp4":
-            continue
-        match = TEMP_TRACK_STEM_RE.match(f.stem)
-        if not match or match.group("username") in active:
-            continue
-        try:
-            f.unlink()
-            removed.append(f.name)
-        except OSError as exc:
-            logger.warning("Failed to remove orphaned temp file %s: %s", f.name, exc)
-    if removed:
-        logger.info("Removed %d orphaned temp file(s): %s", len(removed), removed)
-    return removed
+    """Sweep DOWNLOADS_DIR for orphaned temp tracks (see downloader.cleanup)."""
+    return cleanup_orphaned_temp_files(DOWNLOADS_DIR, manager.active_usernames())
 
 
 def _username_from_completed_stem(stem: str) -> str:
@@ -359,30 +335,8 @@ def _contact_sheet_path(file_path: Path) -> Path:
 
 
 def _cleanup_orphaned_contact_sheets() -> list[str]:
-    """Remove contact-sheet JPEGs whose source recording no longer exists.
-    `delete_file` removes the sheet alongside the .mp4 when a user deletes
-    through the API, but the .mp4 can also disappear by other means -- a
-    manual `rm`, or an external tool watching `downloads/` (a NAS scanner,
-    jDownloader, etc. -- see the bind mounts in compose.override.yaml) that
-    has no reason to know about the sidecar .jpg. This reclaims those."""
-    removed = []
-    for f in DOWNLOADS_DIR.iterdir():
-        if not f.is_file() or f.suffix != ".jpg":
-            continue
-        match = CONTACT_SHEET_STEM_RE.match(f.stem)
-        if not match:
-            continue
-        source = f.with_name(match.group("source_stem") + ".mp4")
-        if source.exists():
-            continue
-        try:
-            f.unlink()
-            removed.append(f.name)
-        except OSError as exc:
-            logger.warning("Failed to remove orphaned contact sheet %s: %s", f.name, exc)
-    if removed:
-        logger.info("Removed %d orphaned contact sheet(s): %s", len(removed), removed)
-    return removed
+    """Sweep DOWNLOADS_DIR for orphaned contact sheets (see downloader.cleanup)."""
+    return cleanup_orphaned_contact_sheets(DOWNLOADS_DIR)
 
 
 async def _ensure_contact_sheet(file_path: Path) -> bool:
