@@ -8,7 +8,13 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       CB_PROXY_URL: ${CB_PROXY_URL:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: ${LOG_MAX_FILE:-3}
     volumes:
       - ./downloads:/app/downloads

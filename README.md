@@ -149,6 +149,9 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `CONTACT_SHEET_AUTO_GENERATE` | `false`  | Generate contact sheets automatically for every completed download, including backfilling existing files that don't have one yet, instead of only on first view |
 | `MODAL_WIDTH_PERCENT` | `80`            | Width of the contact sheet / video player modal dialogs, as a percentage of page width (clamped to 20-100) |
 | `AUTO_DOWNLOAD_MAX_CONCURRENT` | `4`     | Max number of auto-record downloads the background scheduler may run at once |
+| `LOG_LEVEL`    | `INFO`                   | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_MAX_SIZE` | `10m`                    | Docker Compose only: max size of each rotated `json-file` log before it rolls over |
+| `LOG_MAX_FILE` | `3`                      | Docker Compose only: number of rotated log files to keep |
 
 Example:
 
@@ -377,6 +380,12 @@ chaturbate/
   checks on state-changing endpoints, but it does not provide authentication.
   Do not expose it to the public internet. The default `HOST` is `127.0.0.1`
   for this reason.
+- **Container logs.** The app logs to stdout/stderr (`LOG_LEVEL`, default
+  `INFO`) so `docker logs` and any log-shipping agent see everything without
+  extra config. The bundled compose files also cap Docker's own `json-file`
+  driver (`LOG_MAX_SIZE`/`LOG_MAX_FILE`, default `10m` × 3 files per
+  container) so a long-running container can't fill the host disk — Docker's
+  own default for this driver is unlimited.
 
 ---
 

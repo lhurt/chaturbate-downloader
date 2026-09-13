@@ -8,6 +8,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       CB_PROXY_URL: ${CB_PROXY_URL:-}
       CONTACT_SHEET_INTERVAL_SECONDS: ${CONTACT_SHEET_INTERVAL_SECONDS:-60}
@@ -15,6 +16,11 @@ services:
       CONTACT_SHEET_COLUMNS: ${CONTACT_SHEET_COLUMNS:-10}
       CONTACT_SHEET_AUTO_GENERATE: ${CONTACT_SHEET_AUTO_GENERATE:-false}
       MODAL_WIDTH_PERCENT: ${MODAL_WIDTH_PERCENT:-80}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${LOG_MAX_SIZE:-10m}
+        max-file: ${LOG_MAX_FILE:-3}
     volumes:
       - ./downloads:/app/downloads
       - /etc/localtime:/etc/localtime:ro
