@@ -487,6 +487,62 @@ def test_download_stream_refreshes_when_initial_master_resolution_fails(tmp_path
     asyncio.run(scenario())
 
 
+def test_download_stream_downloads_video_and_audio_tracks_concurrently(tmp_path):
+    """No existing test ever gives _resolve_master a non-None audio_url, so
+    the asyncio.gather(video_coro, audio_coro) branch -- the actual reason
+    download_stream exists instead of a single _download_track call -- had
+    never been exercised."""
+
+    async def scenario():
+        track_calls = []
+
+        class FakeDownloader(HLSDownloader):
+            async def _resolve_master(self, client, master_url):
+                return (
+                    "https://cdn.example/live/video.m3u8?token=x",
+                    "https://cdn.example/live/audio.m3u8?token=x",
+                )
+
+            async def _validate_playlist(self, client, url, label):
+                return True
+
+            async def _download_track(
+                self,
+                client,
+                stop_event,
+                playlist_url,
+                output_file,
+                username,
+                track_name,
+                progress,
+                max_duration,
+                start_barrier=None,
+                require_barrier=False,
+            ):
+                track_calls.append((track_name, require_barrier, start_barrier is not None))
+                return True
+
+            async def _finalize(self, progress, username, file_prefix, video_file, audio_file, audio_ok=False):
+                progress.status = "done"
+                progress.output_path = str(tmp_path / f"{username}.mp4")
+                return progress
+
+        downloader = FakeDownloader(output_dir=tmp_path)
+
+        result = await downloader.download_stream(
+            "alice",
+            "https://cdn.example/live/master.m3u8?token=old",
+        )
+
+        assert result.status == "done"
+        assert sorted(track_calls) == [
+            ("audio", True, True),
+            ("video", True, True),
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_download_stream_reports_initial_master_resolution_cause(tmp_path):
     async def scenario():
         class FakeDownloader(HLSDownloader):
