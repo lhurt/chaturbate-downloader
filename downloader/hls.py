@@ -58,6 +58,32 @@ def _select_best_variant(playlists):
     return max(playlists, key=lambda p: p.stream_info.bandwidth or 0)
 
 
+# Sentinels returned by _fetch_track_playlist to tell _download_track's loop
+# what to do next, distinct from a real (possibly falsy) playlist object.
+_LOOP_BREAK = object()
+_LOOP_CONTINUE = object()
+
+
+class _TrackAborted(Exception):
+    """Raised internally when an init-fragment error means the track download
+    must stop entirely (propagates out of _download_track as `return False`)."""
+
+
+class _TrackDownloadState:
+    """Mutable state for one _download_track call, threaded through its helpers."""
+
+    def __init__(self, playlist_url: str):
+        self.current_url = playlist_url
+        self.init_written = False
+        self.token_refreshes = 0
+        self.consecutive_errors = 0
+        self.consecutive_empty = 0
+        self.total_segments = 0
+        self.first_playlist_done = False
+        self.downloaded_urls: deque[str] = deque(maxlen=MAX_SEEN_URLS)
+        self.downloaded_set: set[str] = set()
+
+
 class HLSDownloader:
     def __init__(
         self,
@@ -348,50 +374,20 @@ class HLSDownloader:
         start_barrier: Optional[_StartupBarrier] = None,
         require_barrier: bool = False,
     ) -> bool:
-        """Download a single track (video or audio) from a media playlist."""
+        """Download a single track (video or audio) from a media playlist.
+
+        Orchestrates one track's poll loop; the per-iteration work (playlist
+        fetch/backoff, init-fragment write, segment batch download) lives in
+        the helpers below, each taking the shared `state` for this call.
+        """
         if not playlist_url:
             return False
 
         semaphore = asyncio.Semaphore(self.concurrency)
-        downloaded_urls: deque[str] = deque(maxlen=MAX_SEEN_URLS)
-        downloaded_set: set[str] = set()
-        init_written = False
-        consecutive_errors = 0
-        consecutive_empty = 0
+        state = _TrackDownloadState(playlist_url)
         start_time = time.time()
-        current_url = playlist_url
-        token_refreshes = 0
-        total_bytes = 0
-        total_segments = 0
-        first_playlist_done = False
 
         logger.info("[%s] Starting track download: %s", track_name, _redact_url(playlist_url))
-
-        async def refresh_track_url(reason: str) -> bool:
-            nonlocal current_url, init_written, token_refreshes
-            if token_refreshes >= MAX_TOKEN_REFRESHES:
-                return False
-            token_refreshes += 1
-            logger.warning(
-                "[%s] %s, refreshing token (#%d)",
-                track_name,
-                reason,
-                token_refreshes,
-            )
-            new_url = await self._refresh_url(username)
-            if not new_url:
-                return False
-            video_url, audio_url = await self._resolve_master(client, new_url)
-            if track_name == "audio" and audio_url:
-                current_url = audio_url
-            elif video_url:
-                current_url = video_url
-            else:
-                return False
-            init_written = False
-            logger.info("[%s] Token refreshed, URL updated", track_name)
-            await asyncio.sleep(1)
-            return True
 
         try:
             with open(output_file, "wb") as f:
@@ -399,153 +395,66 @@ class HLSDownloader:
                     if max_duration and (time.time() - start_time) >= max_duration:
                         break
 
-                    try:
-                        playlist = await self._fetch_media_playlist(client, current_url)
-                        consecutive_errors = 0
-                    except httpx.HTTPStatusError as exc:
-                        if exc.response.status_code == 403 and await refresh_track_url("Playlist 403"):
-                            continue
-                        consecutive_errors += 1
-                        if consecutive_errors >= MAX_PLAYLIST_ERRORS:
-                            logger.error("[%s] Too many errors", track_name)
-                            break
-                        await asyncio.sleep(min(2**consecutive_errors, 30))
-                        continue
-                    except Exception as exc:
-                        consecutive_errors += 1
-                        if consecutive_errors >= MAX_PLAYLIST_ERRORS:
-                            logger.error("[%s] Too many errors: %s", track_name, _redact_text_urls(str(exc)))
-                            break
-                        await asyncio.sleep(min(2**consecutive_errors, 30))
+                    playlist = await self._fetch_track_playlist(client, username, track_name, state)
+                    if playlist is _LOOP_BREAK:
+                        break
+                    if playlist is _LOOP_CONTINUE:
                         continue
 
-                    if playlist is None:
-                        consecutive_errors += 1
-                        if consecutive_errors >= MAX_PLAYLIST_ERRORS:
-                            break
-                        await asyncio.sleep(2)
-                        continue
+                    base_url = self._get_base_url(state.current_url, playlist)
 
-                    base_url = self._get_base_url(current_url, playlist)
-
-                    if not first_playlist_done:
-                        first_playlist_done = True
+                    if not state.first_playlist_done:
+                        state.first_playlist_done = True
                         if start_barrier is not None and require_barrier:
                             logger.debug("[%s] Waiting for other track at barrier", track_name)
                             await start_barrier.arrive_and_wait()
 
-                    if not init_written and hasattr(playlist, "segment_map") and playlist.segment_map:
-                        init_refreshed = False
-                        for init_seg in playlist.segment_map:
-                            if not init_seg.uri:
-                                continue
-                            init_url = _abs_url(base_url, init_seg.uri)
-                            try:
-                                data = await self._fetch_segment(client, semaphore, init_url)
-                                f.write(data)
-                                f.flush()
-                                init_written = True
-                                total_bytes += len(data)
-                                logger.info("[%s] Init fragment: %d bytes", track_name, len(data))
-                            except httpx.HTTPStatusError as exc:
-                                if exc.response.status_code == 403 and await refresh_track_url("Init fragment 403"):
-                                    init_refreshed = True
-                                    break
-                                logger.error("[%s] Init fragment failed: %s", track_name, _redact_text_urls(str(exc)))
-                                return False
-                            except Exception as exc:
-                                logger.error("[%s] Init fragment failed: %s", track_name, _redact_text_urls(str(exc)))
-                                return False
-                        if init_refreshed:
-                            continue
-                        if not init_written:
-                            continue
+                    try:
+                        proceed = await self._write_init_segment_map(
+                            client, semaphore, f, playlist, base_url, username, track_name, state
+                        )
+                    except _TrackAborted:
+                        return False
+                    if not proceed:
+                        continue
 
-                    new_segments = []
-                    for segment in playlist.segments:
-                        seg_url = segment.uri
-                        if not seg_url:
-                            continue
-                        seg_url = _abs_url(base_url, seg_url)
-                        if _segment_identity(seg_url) not in downloaded_set:
-                            new_segments.append(seg_url)
+                    new_segments = self._collect_new_segments(playlist, base_url, state.downloaded_set)
 
                     if new_segments:
-                        consecutive_empty = 0
+                        state.consecutive_empty = 0
+                        seg_durations = self._segment_durations(playlist, base_url)
+                        self._log_discontinuity(playlist, track_name)
 
-                        seg_durations: dict[str, float] = {}
-                        for segment in playlist.segments:
-                            seg_uri = segment.uri
-                            if not seg_uri:
-                                continue
-                            seg_uri = _abs_url(base_url, seg_uri)
-                            seg_durations[_segment_identity(seg_uri)] = float(segment.duration or 0.0)
-
-                        for segment in playlist.segments:
-                            if getattr(segment, "discontinuity", False):
-                                logger.warning(
-                                    "[%s] EXT-X-DISCONTINUITY in playlist — downstream mux may show a seam",
-                                    track_name,
-                                )
-                                break
-
-                        refresh_after_segment_403 = False
-                        processed_segments = 0
-                        for seg_url in new_segments:
-                            seg_identity = _segment_identity(seg_url)
-                            try:
-                                data = await self._fetch_segment_with_retry(
-                                    client,
-                                    semaphore,
-                                    seg_url,
-                                    max_retries=3,
-                                    track_name=track_name,
-                                )
-                            except httpx.HTTPStatusError as exc:
-                                if exc.response.status_code == 403 and await refresh_track_url("Segment 403"):
-                                    refresh_after_segment_403 = True
-                                    break
-                                data = None
-                            if data is not None:
-                                f.write(data)
-                                downloaded_set.add(seg_identity)
-                                downloaded_urls.append(seg_identity)
-                                total_bytes += len(data)
-                                progress.downloaded_segments += 1
-                                progress.bytes_downloaded += len(data)
-                                processed_segments += 1
-                            else:
-                                progress.failed_segments += 1
-                                processed_segments += 1
-                                lost = seg_durations.get(seg_identity, 0.0)
-                                logger.warning(
-                                    "[%s] Lost %.2fs of timeline (failed segment) — A/V may drift from this point",
-                                    track_name,
-                                    lost,
-                                )
-
-                        f.flush()
-                        progress.total_segments += processed_segments
-                        total_segments += processed_segments
-                        if refresh_after_segment_403:
+                        refreshed = await self._download_segment_batch(
+                            client,
+                            semaphore,
+                            f,
+                            new_segments,
+                            seg_durations,
+                            username,
+                            track_name,
+                            progress,
+                            state,
+                        )
+                        if refreshed:
                             if self.on_progress:
                                 self.on_progress(progress)
                             continue
 
-                        if len(downloaded_set) > MAX_SEEN_URLS:
-                            downloaded_set = set(downloaded_urls)
+                        if len(state.downloaded_set) > MAX_SEEN_URLS:
+                            state.downloaded_set = set(state.downloaded_urls)
 
                         if self.on_progress:
                             self.on_progress(progress)
                     else:
-                        consecutive_empty += 1
-                        if consecutive_empty >= MAX_EMPTY_POLLS:
+                        state.consecutive_empty += 1
+                        if state.consecutive_empty >= MAX_EMPTY_POLLS:
                             break
                         target_dur = playlist.target_duration or 2
                         await asyncio.sleep(target_dur / 2)
 
         finally:
-            if require_barrier and start_barrier is not None and not first_playlist_done:
+            if require_barrier and start_barrier is not None and not state.first_playlist_done:
                 start_barrier.abort()
 
         try:
@@ -556,9 +465,222 @@ class HLSDownloader:
             "[%s] Track done: %d bytes, %d segments",
             track_name,
             file_size,
-            total_segments,
+            state.total_segments,
         )
         return file_size > 0
+
+    async def _refresh_track_url(
+        self,
+        client: httpx.AsyncClient,
+        username: str,
+        track_name: str,
+        state: "_TrackDownloadState",
+        reason: str,
+    ) -> bool:
+        """Re-extract the HLS URL and swap it into `state` for this track."""
+        if state.token_refreshes >= MAX_TOKEN_REFRESHES:
+            return False
+        state.token_refreshes += 1
+        logger.warning(
+            "[%s] %s, refreshing token (#%d)",
+            track_name,
+            reason,
+            state.token_refreshes,
+        )
+        new_url = await self._refresh_url(username)
+        if not new_url:
+            return False
+        video_url, audio_url = await self._resolve_master(client, new_url)
+        if track_name == "audio" and audio_url:
+            state.current_url = audio_url
+        elif video_url:
+            state.current_url = video_url
+        else:
+            return False
+        state.init_written = False
+        logger.info("[%s] Token refreshed, URL updated", track_name)
+        await asyncio.sleep(1)
+        return True
+
+    async def _fetch_track_playlist(
+        self,
+        client: httpx.AsyncClient,
+        username: str,
+        track_name: str,
+        state: "_TrackDownloadState",
+    ):
+        """Fetch the next media playlist snapshot for a track.
+
+        Returns the parsed playlist, or one of the _LOOP_BREAK/_LOOP_CONTINUE
+        sentinels telling _download_track's loop what to do next.
+        """
+        try:
+            playlist = await self._fetch_media_playlist(client, state.current_url)
+            state.consecutive_errors = 0
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 403 and await self._refresh_track_url(
+                client, username, track_name, state, "Playlist 403"
+            ):
+                return _LOOP_CONTINUE
+            state.consecutive_errors += 1
+            if state.consecutive_errors >= MAX_PLAYLIST_ERRORS:
+                logger.error("[%s] Too many errors", track_name)
+                return _LOOP_BREAK
+            await asyncio.sleep(min(2**state.consecutive_errors, 30))
+            return _LOOP_CONTINUE
+        except Exception as exc:
+            state.consecutive_errors += 1
+            if state.consecutive_errors >= MAX_PLAYLIST_ERRORS:
+                logger.error("[%s] Too many errors: %s", track_name, _redact_text_urls(str(exc)))
+                return _LOOP_BREAK
+            await asyncio.sleep(min(2**state.consecutive_errors, 30))
+            return _LOOP_CONTINUE
+
+        if playlist is None:
+            state.consecutive_errors += 1
+            if state.consecutive_errors >= MAX_PLAYLIST_ERRORS:
+                return _LOOP_BREAK
+            await asyncio.sleep(2)
+            return _LOOP_CONTINUE
+
+        return playlist
+
+    async def _write_init_segment_map(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        f,
+        playlist: m3u8.M3U8,
+        base_url: str,
+        username: str,
+        track_name: str,
+        state: "_TrackDownloadState",
+    ) -> bool:
+        """Write any not-yet-written init (EXT-X-MAP) fragments to `f`.
+
+        Returns True if the caller should proceed to segment collection this
+        iteration, False if the caller should `continue` the outer loop.
+        Raises _TrackAborted if a fetch error means the whole track download
+        must stop (caller turns that into `_download_track` returning False).
+        """
+        if state.init_written or not (hasattr(playlist, "segment_map") and playlist.segment_map):
+            return True
+
+        init_refreshed = False
+        for init_seg in playlist.segment_map:
+            if not init_seg.uri:
+                continue
+            init_url = _abs_url(base_url, init_seg.uri)
+            try:
+                data = await self._fetch_segment(client, semaphore, init_url)
+                f.write(data)
+                f.flush()
+                state.init_written = True
+                logger.info("[%s] Init fragment: %d bytes", track_name, len(data))
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403 and await self._refresh_track_url(
+                    client, username, track_name, state, "Init fragment 403"
+                ):
+                    init_refreshed = True
+                    break
+                logger.error("[%s] Init fragment failed: %s", track_name, _redact_text_urls(str(exc)))
+                raise _TrackAborted
+            except Exception as exc:
+                logger.error("[%s] Init fragment failed: %s", track_name, _redact_text_urls(str(exc)))
+                raise _TrackAborted
+
+        return not (init_refreshed or not state.init_written)
+
+    @staticmethod
+    def _collect_new_segments(playlist: m3u8.M3U8, base_url: str, downloaded_set: set) -> list:
+        new_segments = []
+        for segment in playlist.segments:
+            seg_url = segment.uri
+            if not seg_url:
+                continue
+            seg_url = _abs_url(base_url, seg_url)
+            if _segment_identity(seg_url) not in downloaded_set:
+                new_segments.append(seg_url)
+        return new_segments
+
+    @staticmethod
+    def _segment_durations(playlist: m3u8.M3U8, base_url: str) -> dict:
+        durations = {}
+        for segment in playlist.segments:
+            seg_uri = segment.uri
+            if not seg_uri:
+                continue
+            seg_uri = _abs_url(base_url, seg_uri)
+            durations[_segment_identity(seg_uri)] = float(segment.duration or 0.0)
+        return durations
+
+    @staticmethod
+    def _log_discontinuity(playlist: m3u8.M3U8, track_name: str) -> None:
+        for segment in playlist.segments:
+            if getattr(segment, "discontinuity", False):
+                logger.warning(
+                    "[%s] EXT-X-DISCONTINUITY in playlist — downstream mux may show a seam",
+                    track_name,
+                )
+                break
+
+    async def _download_segment_batch(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        f,
+        new_segments: list,
+        seg_durations: dict,
+        username: str,
+        track_name: str,
+        progress: DownloadProgress,
+        state: "_TrackDownloadState",
+    ) -> bool:
+        """Download one batch of new segments, writing each to `f` in order.
+
+        Returns True if a 403 mid-batch triggered a token refresh (caller
+        should skip the seen-URL trim and just `continue` the outer loop).
+        """
+        processed_segments = 0
+        refresh_after_403 = False
+        for seg_url in new_segments:
+            seg_identity = _segment_identity(seg_url)
+            try:
+                data = await self._fetch_segment_with_retry(
+                    client,
+                    semaphore,
+                    seg_url,
+                    max_retries=3,
+                    track_name=track_name,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403 and await self._refresh_track_url(
+                    client, username, track_name, state, "Segment 403"
+                ):
+                    refresh_after_403 = True
+                    break
+                data = None
+            if data is not None:
+                f.write(data)
+                state.downloaded_set.add(seg_identity)
+                state.downloaded_urls.append(seg_identity)
+                progress.downloaded_segments += 1
+                progress.bytes_downloaded += len(data)
+                processed_segments += 1
+            else:
+                progress.failed_segments += 1
+                processed_segments += 1
+                lost = seg_durations.get(seg_identity, 0.0)
+                logger.warning(
+                    "[%s] Lost %.2fs of timeline (failed segment) — A/V may drift from this point",
+                    track_name,
+                    lost,
+                )
+
+        f.flush()
+        progress.total_segments += processed_segments
+        state.total_segments += processed_segments
+        return refresh_after_403
 
     async def _finalize(
         self,

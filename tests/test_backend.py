@@ -537,6 +537,44 @@ def test_refresh_overlap_dedupe_uses_token_insensitive_identity():
     assert hls_module._segment_identity(old_url) == hls_module._segment_identity(new_url)
 
 
+def test_collect_new_segments_skips_already_downloaded_and_empty_uris():
+    playlist = m3u8.loads(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
+        "#EXTINF:1.0,\nseg-0.m4s?token=x\n"
+        "#EXTINF:1.0,\nseg-1.m4s?token=x\n"
+    )
+    base_url = "https://cdn.example/live/"
+    already_seen = {hls_module._segment_identity(base_url + "seg-0.m4s?token=x")}
+
+    new_segments = HLSDownloader._collect_new_segments(playlist, base_url, already_seen)
+
+    assert new_segments == ["https://cdn.example/live/seg-1.m4s?token=x"]
+
+
+def test_segment_durations_maps_identity_to_duration():
+    playlist = m3u8.loads(
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
+        "#EXTINF:1.5,\nseg-0.m4s?token=x\n"
+    )
+    base_url = "https://cdn.example/live/"
+
+    durations = HLSDownloader._segment_durations(playlist, base_url)
+
+    identity = hls_module._segment_identity(base_url + "seg-0.m4s?token=x")
+    assert durations == {identity: 1.5}
+
+
+def test_abs_url_leaves_absolute_urls_untouched():
+    assert (
+        hls_module._abs_url("https://cdn.example/live/", "https://other.example/x.m4s")
+        == "https://other.example/x.m4s"
+    )
+    assert (
+        hls_module._abs_url("https://cdn.example/live/", "seg.m4s")
+        == "https://cdn.example/live/seg.m4s"
+    )
+
+
 def test_generate_contact_sheet_builds_tile_filter_from_duration(monkeypatch, tmp_path):
     calls = []
 
