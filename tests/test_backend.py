@@ -172,6 +172,164 @@ def test_start_download_marks_tracker_status_public(monkeypatch):
     asyncio.run(scenario())
 
 
+# ─── Download lifecycle endpoints (stop/status/file) ───────
+
+
+def test_start_endpoint_rejects_non_positive_max_duration():
+    client = TestClient(webapp.app)
+
+    response = client.post(
+        "/api/download/start",
+        params={"username": "alice", "max_duration": 0},
+        headers={"origin": "http://localhost:8000"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "max_duration must be positive"
+
+
+def test_stop_download_endpoint_returns_manager_result(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeManager:
+            async def stop_download(self, username):
+                assert username == "alice"
+                return {"status": "stopped", "username": "alice"}
+
+        monkeypatch.setattr(webapp, "manager", FakeManager())
+
+        return await webapp.stop_download(FakeRequest(), "Alice")
+
+    assert asyncio.run(scenario()) == {"status": "stopped", "username": "alice"}
+
+
+def test_stop_download_endpoint_404s_when_manager_reports_an_error(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeManager:
+            async def stop_download(self, username):
+                return {"error": "No active download for alice"}
+
+        monkeypatch.setattr(webapp, "manager", FakeManager())
+
+        try:
+            await webapp.stop_download(FakeRequest(), "alice")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError("expected HTTPException")
+
+    asyncio.run(scenario())
+
+
+def test_stop_all_endpoint_delegates_to_manager(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeManager:
+            async def stop_all(self):
+                return {"status": "all_stopped"}
+
+        monkeypatch.setattr(webapp, "manager", FakeManager())
+
+        return await webapp.stop_all(FakeRequest())
+
+    assert asyncio.run(scenario()) == {"status": "all_stopped"}
+
+
+def test_get_all_status_endpoint_returns_manager_status(monkeypatch):
+    class FakeManager:
+        def get_status(self):
+            return [{"username": "alice", "active": True}]
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+
+    result = asyncio.run(webapp.get_all_status())
+
+    assert result == [{"username": "alice", "active": True}]
+
+
+def test_get_status_endpoint_returns_one_download(monkeypatch):
+    class FakeManager:
+        def get_download(self, username):
+            assert username == "alice"
+            return {"username": "alice", "status": "downloading"}
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+
+    result = asyncio.run(webapp.get_status("Alice"))
+
+    assert result == {"username": "alice", "status": "downloading"}
+
+
+def test_get_status_endpoint_404s_when_not_found(monkeypatch):
+    class FakeManager:
+        def get_download(self, username):
+            return None
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+
+    try:
+        asyncio.run(webapp.get_status("alice"))
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("expected HTTPException")
+
+
+def test_download_file_endpoint_uses_managers_output_path(monkeypatch, tmp_path):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"data")
+
+    class FakeManager:
+        def get_download(self, username):
+            return {"output_path": str(completed)}
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    response = asyncio.run(webapp.download_file("alice"))
+
+    assert response.path == str(completed)
+
+
+def test_download_file_endpoint_falls_back_to_directory_scan(monkeypatch, tmp_path):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"data")
+
+    class FakeManager:
+        def get_download(self, username):
+            return None
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    response = asyncio.run(webapp.download_file("alice"))
+
+    assert response.path == str(completed)
+
+
+def test_download_file_endpoint_404s_when_nothing_found(monkeypatch, tmp_path):
+    class FakeManager:
+        def get_download(self, username):
+            return None
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    try:
+        asyncio.run(webapp.download_file("alice"))
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("expected HTTPException")
+
+
 def test_tracked_status_poll_skips_indeterminate_status(monkeypatch):
     async def scenario():
         updates = []
