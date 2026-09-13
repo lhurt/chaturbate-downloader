@@ -8,7 +8,6 @@ import asyncio
 import logging
 import os
 import re
-import time
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional
@@ -16,7 +15,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -25,8 +24,10 @@ from downloader.auto_download import AutoDownloadScheduler
 from downloader.cleanup import cleanup_orphaned_contact_sheets, cleanup_orphaned_temp_files
 from downloader.converter import _probe_duration, generate_contact_sheet
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
-from downloader.hls import _abs_url, _select_best_variant
 from downloader.http_client import proxy_kwargs
+# Kept importable as app._redact_text_urls/_redact_url for tests, even though
+# app.py's own code no longer calls them (routers/debug.py imports its own
+# copy directly from downloader.redact).
 from downloader.redact import _redact_text_urls, _redact_url
 from downloader.tracker import Tracker
 
@@ -221,109 +222,10 @@ async def index(request: Request):
     )
 
 
-# ─── API Endpoints ─────────────────────────────────────────
-
-
-@app.post("/api/download/start")
-async def start_download(
-    request: Request,
-    username: str,
-    output_format: str = "mp4",
-    max_duration: Optional[int] = None,
-):
-    """Start downloading a stream."""
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    if output_format != "mp4":
-        raise HTTPException(status_code=400, detail="Format must be 'mp4'")
-    if max_duration is not None and max_duration <= 0:
-        raise HTTPException(status_code=400, detail="max_duration must be positive")
-    # Convert minutes (from UI) to seconds for the backend
-    duration_seconds = max_duration * 60 if max_duration else None
-    result = await manager.start_download(
-        username=username,
-        max_duration=duration_seconds,
-    )
-    if "error" in result:
-        raise HTTPException(status_code=409, detail=result["error"])
-    await tracker.upsert_download(username)
-    await tracker.update_status(username, "public")
-    return result
-
-
-@app.post("/api/download/stop/{username}")
-async def stop_download(request: Request, username: str):
-    """Stop a specific download."""
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    result = await manager.stop_download(username)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    return result
-
-
-@app.post("/api/download/stop-all")
-async def stop_all(request: Request):
-    """Stop all active downloads."""
-    _require_trusted_origin(request)
-    return await manager.stop_all()
-
-
-@app.get("/api/download/status")
-async def get_all_status():
-    """Get status of all downloads."""
-    return manager.get_status()
-
-
-@app.get("/api/download/status/{username}")
-async def get_status(username: str):
-    """Get status of a specific download."""
-    username = _validate_username(username)
-    result = manager.get_download(username)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Download not found")
-    return result
-
-
-@app.get("/api/download/file/{username}")
-async def download_file(username: str):
-    """Download the completed file."""
-    username = _validate_username(username)
-
-    # Try download status first
-    status = manager.get_download(username)
-    if status and status.get("output_path"):
-        file_path = Path(status["output_path"]).resolve()
-        if file_path.is_relative_to(DOWNLOADS_DIR) and _is_completed_media_file(file_path):
-            return FileResponse(
-                path=str(file_path),
-                media_type="video/mp4",
-                filename=file_path.name,
-            )
-
-    # Fallback: scan downloads directory for any file starting with username_
-    for f in sorted(DOWNLOADS_DIR.iterdir(), reverse=True):
-        if _is_completed_media_file(f) and f.name.startswith(f"{username}_"):
-            return FileResponse(
-                path=str(f),
-                media_type="video/mp4",
-                filename=f.name,
-            )
-
-    raise HTTPException(status_code=404, detail="File not found")
-
-
-@app.get("/api/downloads/file/{filename}")
-async def download_file_by_name(filename: str):
-    """Download an exact completed filename."""
-    file_path = _safe_downloads_path(filename)
-    if not file_path.exists() or not _is_completed_media_file(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(
-        path=str(file_path),
-        media_type="video/mp4",
-        filename=file_path.name,
-    )
+# ─── Shared download/contact-sheet/tracked state ───────────
+# The route handlers themselves live in routers/*.py (included below);
+# this section holds what they share: the manager/tracker singletons,
+# config, caches, and helpers.
 
 
 _CONTACT_SHEET_LOCK = asyncio.Lock()
@@ -379,34 +281,6 @@ def _schedule_contact_sheet(file_path: Path) -> None:
     asyncio.create_task(_auto_generate_contact_sheet(file_path))
 
 
-@app.get("/api/downloads/contact-sheet/{filename}")
-async def get_contact_sheet(filename: str):
-    """Return a per-minute contact-sheet thumbnail for a completed recording,
-    generating and caching it next to the source file on first request."""
-    file_path = _safe_downloads_path(filename)
-    if not file_path.exists() or not _is_completed_media_file(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    if not await _ensure_contact_sheet(file_path):
-        raise HTTPException(status_code=502, detail="Failed to generate contact sheet")
-
-    return FileResponse(path=str(_contact_sheet_path(file_path)), media_type="image/jpeg")
-
-
-@app.post("/api/downloads/contact-sheets/generate-all")
-async def generate_all_contact_sheets(request: Request):
-    """Manually (re)run contact-sheet generation for every completed file that
-    doesn't have one yet -- the same backfill `CONTACT_SHEET_AUTO_GENERATE`
-    does automatically, callable on demand regardless of that setting."""
-    _require_trusted_origin(request)
-    media_files = [f for f in DOWNLOADS_DIR.iterdir() if _is_completed_media_file(f)]
-    missing = [f for f in media_files if not _contact_sheet_path(f).exists()]
-    results = await asyncio.gather(*(_ensure_contact_sheet(f) for f in missing))
-    generated = [f.name for f, ok in zip(missing, results) if ok]
-    failed = [f.name for f, ok in zip(missing, results) if not ok]
-    return {"generated": generated, "failed": failed, "already_had_one": len(media_files) - len(missing)}
-
-
 _duration_cache: dict[str, Optional[float]] = {}
 
 
@@ -425,64 +299,6 @@ def _prune_duration_cache(existing_names: set[str]) -> None:
         _duration_cache.pop(stale, None)
 
 
-@app.get("/api/downloads/list")
-async def list_downloaded_files():
-    """List all downloaded files."""
-    media_files = [f for f in DOWNLOADS_DIR.iterdir() if _is_completed_media_file(f)]
-    _prune_duration_cache({f.name for f in media_files})
-    durations = await asyncio.gather(*(_get_duration_seconds(f) for f in media_files))
-
-    files = []
-    for f, duration in zip(media_files, durations):
-        stem = f.stem
-        username = _username_from_completed_stem(stem)
-        st = f.stat()
-        has_contact_sheet = _contact_sheet_path(f).exists()
-        if not has_contact_sheet:
-            _schedule_contact_sheet(f)
-        files.append(
-            {
-                "filename": f.name,
-                "username": username,
-                "size": st.st_size,
-                "size_mb": round(st.st_size / (1024 * 1024), 2),
-                "format": f.suffix.lstrip("."),
-                "has_contact_sheet": has_contact_sheet,
-                "duration_seconds": duration,
-            }
-        )
-    return sorted(files, key=lambda x: x["filename"])
-
-
-@app.delete("/api/downloads/{filename}")
-async def delete_file(request: Request, filename: str):
-    """Delete a downloaded file."""
-    _require_trusted_origin(request)
-    file_path = _safe_downloads_path(filename)
-    if not file_path.exists() or not _is_completed_media_file(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    file_path.unlink()
-    _contact_sheet_path(file_path).unlink(missing_ok=True)
-    _duration_cache.pop(filename, None)
-    return {"status": "deleted", "filename": filename}
-
-
-@app.post("/api/downloads/cleanup-orphans")
-async def cleanup_orphans(request: Request):
-    """Manually remove leftover `_video.mp4`/`_audio.mp4` temp tracks from
-    downloads that never finalized (crash, force-cancel, ungraceful
-    shutdown), plus contact sheets whose source recording is gone (deleted
-    outside the API, e.g. by an external tool watching `downloads/`). Also
-    runs automatically once at server startup."""
-    _require_trusted_origin(request)
-    removed_temp_files = _cleanup_orphaned_temp_files()
-    removed_contact_sheets = _cleanup_orphaned_contact_sheets()
-    return {
-        "removed_temp_files": removed_temp_files,
-        "removed_contact_sheets": removed_contact_sheets,
-    }
-
-
 # ─── Tracked Streamers ────────────────────────────────────
 
 
@@ -497,120 +313,6 @@ def _prune_thumb_cache(valid_usernames: set[str]) -> None:
     doesn't grow forever across the lifetime of a long-running server."""
     for stale in [name for name in _thumb_cache if name not in valid_usernames]:
         _thumb_cache.pop(stale, None)
-
-
-@app.get("/api/tracked")
-async def list_tracked():
-    rows = await tracker.list_all()
-    active = manager.get_status()
-    if isinstance(active, dict) and isinstance(active.get("downloads"), list):
-        active_users = {item.get("username") for item in active["downloads"] if item.get("active")}
-    elif isinstance(active, list):
-        active_users = {item.get("username") for item in active if item.get("active")}
-    else:
-        active_users = set()
-    for row in rows:
-        row["downloading"] = row["username"] in active_users
-    return {"tracked": rows, "polled_every_seconds": POLL_INTERVAL_SECONDS}
-
-
-@app.post("/api/tracked")
-async def add_tracked(request: Request, username: str):
-    """Track a streamer without downloading, e.g. to enable auto-record while offline."""
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    added = await tracker.add(username)
-    if not added:
-        raise HTTPException(status_code=409, detail="Username already tracked")
-
-    try:
-        async with _status_client() as client:
-            await _check_tracked_status(client, username)
-    except Exception as exc:
-        logger.debug("initial status fetch failed for %s: %s", username, exc)
-
-    return {"status": "added", "username": username}
-
-
-@app.delete("/api/tracked/{username}")
-async def delete_tracked(request: Request, username: str):
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    removed = await tracker.delete(username)
-    if not removed:
-        raise HTTPException(status_code=404, detail="Username not tracked")
-    _thumb_cache.pop(username, None)
-    return {"status": "deleted", "username": username}
-
-
-@app.post("/api/tracked/{username}/refresh")
-async def refresh_tracked(request: Request, username: str):
-    """Manually re-check one streamer's live status right now instead of
-    waiting for the next background poll (up to `POLL_INTERVAL_SECONDS`)."""
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    if username not in set(await tracker.list_usernames()):
-        raise HTTPException(status_code=404, detail="Username not tracked")
-    async with _status_client() as client:
-        status = await _check_tracked_status(client, username)
-    return {"username": username, "status": status}
-
-
-@app.post("/api/tracked/refresh-all")
-async def refresh_all_tracked(request: Request):
-    """Manually run the same status check the background poller performs
-    every `POLL_INTERVAL_SECONDS`, immediately, for every tracked username."""
-    _require_trusted_origin(request)
-    count = await _refresh_all_tracked_status()
-    return {"status": "refreshed", "count": count}
-
-
-@app.patch("/api/tracked/{username}/auto-download")
-async def set_auto_download(request: Request, username: str, enabled: bool):
-    _require_trusted_origin(request)
-    username = _validate_username(username)
-    updated = await tracker.set_auto_download(username, enabled)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Username not tracked")
-    return {"username": username, "auto_download": enabled}
-
-
-@app.get("/api/thumbnail/{username}")
-async def get_thumbnail(username: str):
-    username = _validate_username(username)
-    cached = _thumb_cache.get(username)
-    if cached and time.time() - cached[0] < _THUMB_TTL_SECONDS:
-        return Response(content=cached[1], media_type=cached[2])
-
-    async with _thumb_lock:
-        cached = _thumb_cache.get(username)
-        if cached and time.time() - cached[0] < _THUMB_TTL_SECONDS:
-            return Response(content=cached[1], media_type=cached[2])
-
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0),
-                follow_redirects=True,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Referer": "https://chaturbate.com/",
-                },
-                **proxy_kwargs(),
-            ) as client:
-                resp = await client.get(_THUMB_URL.format(username=username))
-        except Exception as exc:
-            logger.debug("thumbnail fetch failed for %s: %s", username, exc)
-            raise HTTPException(status_code=502, detail="Thumbnail unavailable")
-
-        if resp.status_code != 200 or not resp.content:
-            raise HTTPException(status_code=404, detail="Thumbnail not found")
-
-        media_type = resp.headers.get("content-type", "image/jpeg")
-        _thumb_cache[username] = (time.time(), resp.content, media_type)
-        return Response(content=resp.content, media_type=media_type)
-
-
-# ─── Debug Endpoints ──────────────────────────────────────
 
 
 @contextmanager
@@ -630,116 +332,42 @@ def _capture_downloader_logs():
         downloader_logger.removeHandler(handler)
 
 
-@app.get("/api/debug/extract/{username}")
-async def debug_extract(username: str):
-    """Debug: test HLS URL extraction for a room without downloading."""
-    from downloader.extractor import extract_hls_url
+# ─── Routers ────────────────────────────────────────────────
+# Imported last (not at module top) since routers/*.py each `import app` to
+# reach the shared state/helpers above -- app.py isn't done initializing yet
+# at that point, which is fine as long as they only touch `app.<name>` from
+# inside a request handler, never at their own module level.
 
-    username = _validate_username(username)
+from routers.debug import router as debug_router
+from routers.downloads import (
+    cleanup_orphans,
+    delete_file,
+    download_file,
+    download_file_by_name,
+    generate_all_contact_sheets,
+    get_all_status,
+    get_contact_sheet,
+    get_status,
+    list_downloaded_files,
+    router as downloads_router,
+    start_download,
+    stop_all,
+    stop_download,
+)
+from routers.tracked import (
+    add_tracked,
+    delete_tracked,
+    get_thumbnail,
+    list_tracked,
+    refresh_all_tracked,
+    refresh_tracked,
+    router as tracked_router,
+    set_auto_download,
+)
 
-    with _capture_downloader_logs() as log_capture:
-        url = await extract_hls_url(username)
-        logs = _redact_text_urls(log_capture.getvalue())
-
-    return {
-        "username": username,
-        "hls_url": _redact_url(url),
-        "found": url is not None,
-        "logs": logs,
-    }
-
-
-@app.get("/api/debug/playlist/{username}")
-async def debug_playlist(username: str):
-    """Debug: fetch and parse the HLS playlist, show its full contents."""
-    import m3u8
-
-    username = _validate_username(username)
-
-    with _capture_downloader_logs() as log_capture:
-        from downloader.extractor import extract_hls_url, DEFAULT_HEADERS
-
-        hls_url = await extract_hls_url(username)
-
-        if not hls_url:
-            return {
-                "username": username,
-                "error": "No HLS URL found",
-                "logs": _redact_text_urls(log_capture.getvalue()),
-            }
-
-        async with httpx.AsyncClient(
-            headers=DEFAULT_HEADERS,
-            timeout=httpx.Timeout(20.0),
-            follow_redirects=True,
-            **proxy_kwargs(),
-        ) as client:
-            resp = await client.get(hls_url)
-            master_body = resp.text
-            master_status = resp.status_code
-            master_playlist = m3u8.loads(master_body)
-            is_variant = master_playlist.is_variant
-
-            result = {
-                "username": username,
-                "hls_url": _redact_url(hls_url),
-                "master_status": master_status,
-                "master_is_variant": is_variant,
-                "master_content": _redact_text_urls(master_body[:3000]),
-                "master_content_length": len(master_body),
-            }
-
-            if is_variant and master_playlist.playlists:
-                variants = []
-                for p in master_playlist.playlists:
-                    var_url = _abs_url(hls_url, p.uri)
-                    variants.append(
-                        {
-                            "uri": _redact_url(var_url),
-                            "bandwidth": p.stream_info.bandwidth,
-                            "resolution": str(p.stream_info.resolution)
-                            if p.stream_info.resolution
-                            else None,
-                        }
-                    )
-                result["variants"] = variants
-
-                best = _select_best_variant(master_playlist.playlists)
-                best_url = _abs_url(hls_url, best.uri)
-
-                result["selected_variant_url"] = _redact_url(best_url)
-
-                resp2 = await client.get(best_url)
-                variant_body = resp2.text
-                variant_playlist = m3u8.loads(variant_body)
-
-                result["variant_status"] = resp2.status_code
-                result["variant_content"] = _redact_text_urls(variant_body[:5000])
-                result["variant_content_length"] = len(variant_body)
-                result["variant_segment_count"] = len(variant_playlist.segments)
-                result["variant_has_segment_map"] = bool(variant_playlist.segment_map)
-                result["variant_is_variant"] = variant_playlist.is_variant
-                result["variant_target_duration"] = variant_playlist.target_duration
-
-                segs = []
-                for s in variant_playlist.segments[:5]:
-                    seg_url = _abs_url(best_url, s.uri) if s.uri else ""
-                    segs.append({"uri": _redact_url(seg_url), "duration": s.duration})
-                result["first_segments"] = segs
-
-            elif master_playlist.segments:
-                result["direct_segment_count"] = len(master_playlist.segments)
-                segs = []
-                for s in master_playlist.segments[:5]:
-                    seg_url = _abs_url(hls_url, s.uri) if s.uri else ""
-                    segs.append({"uri": _redact_url(seg_url), "duration": s.duration})
-                result["first_segments"] = segs
-            else:
-                result["no_segments_found"] = True
-                result["raw_parse_check"] = "#EXTINF" in master_body
-
-        result["logs"] = _redact_text_urls(log_capture.getvalue())
-        return result
+app.include_router(downloads_router)
+app.include_router(tracked_router)
+app.include_router(debug_router)
 
 
 def main():

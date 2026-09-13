@@ -319,7 +319,11 @@ and origins outside `CORS_ORIGINS`. Keep `CORS_ORIGINS` in sync if you change
 
 ```
 chaturbate/
-├── app.py                 # FastAPI app, routes, validation, lifespan, background poller
+├── app.py                 # FastAPI app: config, state, helpers, lifespan, background poller
+├── routers/
+│   ├── downloads.py       # Download lifecycle, completed-file list, contact sheets
+│   ├── tracked.py         # Tracked-streamer dashboard + thumbnail proxy
+│   └── debug.py           # HLS extraction/playlist debug endpoints
 ├── downloader/
 │   ├── __init__.py        # Public exports
 │   ├── extractor.py       # 4 strategies to pull a fresh HLS URL
