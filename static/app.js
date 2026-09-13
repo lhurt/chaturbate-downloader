@@ -19,6 +19,8 @@
   let completedFiles = [];
   let pollTimer = null;
   const generatingContactSheets = new Set();
+  const CONFIRM_DELETE_MS = 3500;
+  const armedDeletes = new Map(); // filename -> expiry timestamp, survives re-render across polls
 
   const EYE_ICON_SVG = `
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -561,10 +563,19 @@
         </div>
       `;
 
-      row.querySelector('.btn-delete').addEventListener('click', (e) => {
+      const deleteBtn = row.querySelector('.btn-delete');
+      deleteBtn.addEventListener('click', (e) => {
         const fname = e.currentTarget.dataset.filename;
         armDeleteButton(e.currentTarget, fname);
       });
+      if (file.filename && armedDeletes.has(file.filename)) {
+        const remaining = armedDeletes.get(file.filename) - Date.now();
+        if (remaining > 0) {
+          setDeleteButtonConfirming(deleteBtn, file.filename, remaining);
+        } else {
+          armedDeletes.delete(file.filename);
+        }
+      }
 
       const sheetGroup = row.querySelector('.contact-sheet-group');
       if (sheetGroup) {
@@ -875,18 +886,29 @@
     if (!filename || btn.disabled) return;
     if (btn.dataset.confirming === 'true') {
       clearTimeout(btn._confirmTimer);
+      armedDeletes.delete(filename);
       deleteFile(filename);
       return;
     }
+    setDeleteButtonConfirming(btn, filename, CONFIRM_DELETE_MS);
+  }
+
+  function setDeleteButtonConfirming(btn, filename, remainingMs) {
     btn.dataset.confirming = 'true';
     btn.classList.add('is-confirming');
     btn.textContent = 'Confirm delete';
     btn.setAttribute('aria-label', `Confirm delete ${filename}`);
-    btn._confirmTimer = setTimeout(() => resetDeleteButton(btn, filename), 3500);
+    armedDeletes.set(filename, Date.now() + remainingMs);
+    clearTimeout(btn._confirmTimer);
+    btn._confirmTimer = setTimeout(() => {
+      armedDeletes.delete(filename);
+      resetDeleteButton(btn, filename);
+    }, remainingMs);
   }
 
   function resetDeleteButton(btn, filename) {
     if (!btn) return;
+    if (filename) armedDeletes.delete(filename);
     btn.dataset.confirming = 'false';
     btn.classList.remove('is-confirming');
     btn.textContent = 'Delete';
