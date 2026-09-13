@@ -60,12 +60,6 @@
     render(lastRows);
   }
 
-  function escapeHtml(str) {
-    return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-  }
-
   function formatRelative(ts) {
     if (!ts) return 'never';
     const diff = Date.now() / 1000 - ts;
@@ -79,17 +73,6 @@
     if (!ts) return '';
     const d = new Date(ts * 1000);
     return d.toLocaleString();
-  }
-
-  async function apiCall(url, options = {}) {
-    const resp = await fetch(url, { ...options });
-    if (!resp.ok) {
-      const body = await resp.text();
-      let msg;
-      try { msg = JSON.parse(body).detail || body; } catch { msg = body; }
-      throw new Error(msg);
-    }
-    return resp;
   }
 
   function statusPill(row) {

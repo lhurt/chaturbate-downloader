@@ -17,19 +17,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import re
 from collections import deque
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable, Tuple
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin
 
 import httpx
 import m3u8
 
 from .extractor import DEFAULT_HEADERS
 from .http_client import proxy_kwargs
+from .progress import DownloadProgress, _StartupBarrier
+from .redact import _exception_summary, _redact_text_urls, _redact_url, _segment_identity
 
 logger = logging.getLogger(__name__)
 
@@ -46,110 +46,16 @@ MAX_PLAYLIST_RECURSION = 5
 MAX_SEEN_URLS = 10000
 
 
-def _redact_url(url: Optional[str]) -> Optional[str]:
-    """Remove query/fragment token material before logging URLs."""
-    if not url:
-        return url
-    parts = urlsplit(url)
-    query = "…" if parts.query else ""
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+def _abs_url(base: str, uri: str) -> str:
+    """Resolve a possibly-relative playlist/segment URI against its base URL."""
+    if uri.startswith("http"):
+        return uri
+    return urljoin(base, uri)
 
 
-def _redact_text_urls(text: str) -> str:
-    """Redact token-bearing query strings in free-form log text."""
-    redacted = re.sub(
-        r"https?://[^\s\"'<>]+",
-        lambda match: _redact_url(match.group(0)) or "",
-        text,
-    )
-    return re.sub(r"([^#\s\"'<>?]+)\?[^\s\"'<>]+", r"\1?…", redacted)
-
-
-def _exception_summary(exc: Exception) -> str:
-    """Return useful exception text even for exceptions with empty str()."""
-    message = str(exc).strip()
-    if message:
-        return message
-    return type(exc).__name__
-
-
-def _segment_identity(url: str) -> str:
-    """Identify a segment independent of rotating auth query tokens."""
-    parts = urlsplit(url)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
-
-
-class _StartupBarrier:
-    """Small two-party async barrier compatible with Python 3.10."""
-
-    def __init__(self, parties: int):
-        self.parties = parties
-        self.arrived = 0
-        self._event = asyncio.Event()
-        self._broken = False
-
-    async def arrive_and_wait(self) -> None:
-        if self._broken:
-            raise RuntimeError("startup barrier broken")
-        self.arrived += 1
-        if self.arrived >= self.parties:
-            self._event.set()
-        await self._event.wait()
-        if self._broken:
-            raise RuntimeError("startup barrier broken")
-
-    def abort(self) -> None:
-        self._broken = True
-        self._event.set()
-
-
-@dataclass
-class DownloadProgress:
-    username: str
-    total_segments: int = 0
-    downloaded_segments: int = 0
-    failed_segments: int = 0
-    bytes_downloaded: int = 0
-    start_time: float = field(default_factory=time.time)
-    is_live: bool = True
-    output_path: str = ""
-    error_message: str = ""
-    warning_message: str = ""
-    status: str = "starting"
-
-    @property
-    def progress_pct(self) -> float:
-        if self.total_segments == 0:
-            return 0.0
-        return (self.downloaded_segments / self.total_segments) * 100
-
-    @property
-    def speed_mbps(self) -> float:
-        elapsed = time.time() - self.start_time
-        if elapsed == 0:
-            return 0.0
-        return (self.bytes_downloaded / elapsed) / (1024 * 1024)
-
-    @property
-    def elapsed_seconds(self) -> float:
-        return time.time() - self.start_time
-
-    def to_dict(self) -> dict:
-        return {
-            "username": self.username,
-            "total_segments": self.total_segments,
-            "downloaded_segments": self.downloaded_segments,
-            "failed_segments": self.failed_segments,
-            "bytes_downloaded": self.bytes_downloaded,
-            "progress_pct": round(self.progress_pct, 1),
-            "speed_mbps": round(self.speed_mbps, 2),
-            "elapsed_seconds": round(self.elapsed_seconds, 1),
-            "is_live": self.is_live,
-            "output_path": self.output_path,
-            "error_message": self.error_message,
-            "warning_message": self.warning_message,
-            "status": self.status,
-        }
+def _select_best_variant(playlists):
+    """Pick the highest-bandwidth variant from a master/media playlist's variants."""
+    return max(playlists, key=lambda p: p.stream_info.bandwidth or 0)
 
 
 class HLSDownloader:
@@ -179,7 +85,6 @@ class HLSDownloader:
         self,
         username: str,
         m3u8_url: str,
-        output_format: str = "mp4",
         max_duration: Optional[int] = None,
     ) -> DownloadProgress:
         """Download a live HLS stream with video + audio."""
@@ -377,10 +282,8 @@ class HLSDownloader:
             logger.error("%s", self._last_master_error)
             return None, None
 
-        best = max(master.playlists, key=lambda p: p.stream_info.bandwidth or 0)
-        video_url = best.uri
-        if not video_url.startswith("http"):
-            video_url = urljoin(master_url, video_url)
+        best = _select_best_variant(master.playlists)
+        video_url = _abs_url(master_url, best.uri)
 
         logger.info(
             "Selected video variant: %d bps, resolution=%s",
@@ -402,9 +305,7 @@ class HLSDownloader:
                     and media.group_id == audio_group
                     and media.uri
                 ):
-                    audio_url = media.uri
-                    if not audio_url.startswith("http"):
-                        audio_url = urljoin(master_url, audio_url)
+                    audio_url = _abs_url(master_url, media.uri)
                     logger.info(
                         "Found audio for group '%s': %s",
                         audio_group,
@@ -538,9 +439,7 @@ class HLSDownloader:
                         for init_seg in playlist.segment_map:
                             if not init_seg.uri:
                                 continue
-                            init_url = init_seg.uri
-                            if not init_url.startswith("http"):
-                                init_url = urljoin(base_url, init_url)
+                            init_url = _abs_url(base_url, init_seg.uri)
                             try:
                                 data = await self._fetch_segment(client, semaphore, init_url)
                                 f.write(data)
@@ -567,8 +466,7 @@ class HLSDownloader:
                         seg_url = segment.uri
                         if not seg_url:
                             continue
-                        if not seg_url.startswith("http"):
-                            seg_url = urljoin(base_url, seg_url)
+                        seg_url = _abs_url(base_url, seg_url)
                         if _segment_identity(seg_url) not in downloaded_set:
                             new_segments.append(seg_url)
 
@@ -580,8 +478,7 @@ class HLSDownloader:
                             seg_uri = segment.uri
                             if not seg_uri:
                                 continue
-                            if not seg_uri.startswith("http"):
-                                seg_uri = urljoin(base_url, seg_uri)
+                            seg_uri = _abs_url(base_url, seg_uri)
                             seg_durations[_segment_identity(seg_uri)] = float(segment.duration or 0.0)
 
                         for segment in playlist.segments:
@@ -772,10 +669,8 @@ class HLSDownloader:
         playlist = m3u8.loads(body)
 
         if playlist.is_variant and playlist.playlists:
-            best = max(playlist.playlists, key=lambda p: p.stream_info.bandwidth or 0)
-            variant_url = best.uri
-            if not variant_url.startswith("http"):
-                variant_url = urljoin(url, variant_url)
+            best = _select_best_variant(playlist.playlists)
+            variant_url = _abs_url(url, best.uri)
             return await self._fetch_media_playlist(client, variant_url, _depth + 1)
 
         if not playlist.segments:

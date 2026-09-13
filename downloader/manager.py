@@ -8,10 +8,10 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Callable, Dict, Optional
-from urllib.parse import urlsplit, urlunsplit
 
 from .extractor import extract_hls_url
 from .hls import HLSDownloader, DownloadProgress
+from .redact import _redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,6 @@ class DownloadManager:
         self._downloader: Optional[HLSDownloader] = None
         self._lock = asyncio.Lock()
         self._stopping_all = False
-
-    @staticmethod
-    def _redact_url(url: str) -> str:
-        """Remove query/fragment token material before logging URLs."""
-        parts = urlsplit(url)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, "…", ""))
 
     def _get_downloader(self) -> HLSDownloader:
         if self._downloader is None:
@@ -59,7 +53,6 @@ class DownloadManager:
     async def start_download(
         self,
         username: str,
-        output_format: str = "mp4",
         max_duration: Optional[int] = None,
     ) -> dict:
         """Start downloading a stream."""
@@ -100,7 +93,7 @@ class DownloadManager:
             async def _run():
                 try:
                     result = await downloader.download_stream(
-                        username, hls_url, output_format, max_duration
+                        username, hls_url, max_duration
                     )
                     self._downloads[username] = result
                     logger.info(
@@ -133,7 +126,7 @@ class DownloadManager:
                 logger.info(
                     "Got HLS URL for '%s': %s",
                     username,
-                    self._redact_url(hls_url),
+                    _redact_url(hls_url),
                 )
                 self._downloads[username] = progress
                 task = asyncio.create_task(_run())

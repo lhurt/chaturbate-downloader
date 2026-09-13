@@ -162,7 +162,7 @@ def test_start_download_marks_tracker_status_public(monkeypatch):
         assert calls == [
             (
                 "start",
-                {"username": "alice", "output_format": "mp4", "max_duration": None},
+                {"username": "alice", "max_duration": None},
             ),
             ("upsert", "alice"),
             ("status", "alice", "public"),

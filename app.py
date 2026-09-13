@@ -9,10 +9,9 @@ import logging
 import os
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -25,7 +24,9 @@ from downloader import DownloadManager
 from downloader.auto_download import AutoDownloadScheduler
 from downloader.converter import _probe_duration, generate_contact_sheet
 from downloader.extractor import DEFAULT_HEADERS, fetch_room_status
+from downloader.hls import _abs_url, _select_best_variant
 from downloader.http_client import proxy_kwargs
+from downloader.redact import _redact_text_urls, _redact_url
 from downloader.tracker import Tracker
 
 # Configure logging
@@ -139,25 +140,6 @@ def _username_from_completed_stem(stem: str) -> str:
     if not match:
         return stem
     return match.group("username")
-
-
-def _redact_url(url: Optional[str]) -> Optional[str]:
-    """Strip query/fragment token material before returning debug data."""
-    if not url:
-        return url
-    parts = urlsplit(url)
-    query = "…" if parts.query else ""
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
-
-
-def _redact_text_urls(text: str) -> str:
-    """Redact query strings from any URLs embedded in debug text."""
-    redacted = re.sub(
-        r"https?://[^\s\"'<>]+",
-        lambda match: _redact_url(match.group(0)) or "",
-        text,
-    )
-    return re.sub(r"([^#\s\"'<>?]+)\?[^\s\"'<>]+", r"\1?…", redacted)
 
 
 def _require_trusted_origin(request: Request) -> None:
@@ -284,7 +266,6 @@ async def start_download(
     duration_seconds = max_duration * 60 if max_duration else None
     result = await manager.start_download(
         username=username,
-        output_format=output_format,
         max_duration=duration_seconds,
     )
     if "error" in result:
@@ -678,27 +659,33 @@ async def get_thumbnail(username: str):
 # ─── Debug Endpoints ──────────────────────────────────────
 
 
+@contextmanager
+def _capture_downloader_logs():
+    """Temporarily attach a handler to the 'downloader' logger and yield its buffer."""
+    import io
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    downloader_logger = logging.getLogger("downloader")
+    downloader_logger.addHandler(handler)
+    try:
+        yield buf
+    finally:
+        downloader_logger.removeHandler(handler)
+
+
 @app.get("/api/debug/extract/{username}")
 async def debug_extract(username: str):
     """Debug: test HLS URL extraction for a room without downloading."""
     from downloader.extractor import extract_hls_url
-    import io
 
     username = _validate_username(username)
 
-    log_capture = io.StringIO()
-    handler = logging.StreamHandler(log_capture)
-    handler.setLevel(logging.DEBUG)
-    fmt = logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(fmt)
-    logging.getLogger("downloader").addHandler(handler)
-
-    try:
+    with _capture_downloader_logs() as log_capture:
         url = await extract_hls_url(username)
-    finally:
-        logging.getLogger("downloader").removeHandler(handler)
-
-    logs = _redact_text_urls(log_capture.getvalue())
+        logs = _redact_text_urls(log_capture.getvalue())
 
     return {
         "username": username,
@@ -711,21 +698,11 @@ async def debug_extract(username: str):
 @app.get("/api/debug/playlist/{username}")
 async def debug_playlist(username: str):
     """Debug: fetch and parse the HLS playlist, show its full contents."""
-    import httpx
     import m3u8
-    from urllib.parse import urljoin
-    import io
 
     username = _validate_username(username)
 
-    log_capture = io.StringIO()
-    handler = logging.StreamHandler(log_capture)
-    handler.setLevel(logging.DEBUG)
-    fmt = logging.Formatter("%(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(fmt)
-    logging.getLogger("downloader").addHandler(handler)
-
-    try:
+    with _capture_downloader_logs() as log_capture:
         from downloader.extractor import extract_hls_url, DEFAULT_HEADERS
 
         hls_url = await extract_hls_url(username)
@@ -761,9 +738,7 @@ async def debug_playlist(username: str):
             if is_variant and master_playlist.playlists:
                 variants = []
                 for p in master_playlist.playlists:
-                    var_url = p.uri
-                    if not var_url.startswith("http"):
-                        var_url = urljoin(hls_url, var_url)
+                    var_url = _abs_url(hls_url, p.uri)
                     variants.append(
                         {
                             "uri": _redact_url(var_url),
@@ -775,13 +750,8 @@ async def debug_playlist(username: str):
                     )
                 result["variants"] = variants
 
-                best = max(
-                    master_playlist.playlists,
-                    key=lambda p: p.stream_info.bandwidth or 0,
-                )
-                best_url = best.uri
-                if not best_url.startswith("http"):
-                    best_url = urljoin(hls_url, best_url)
+                best = _select_best_variant(master_playlist.playlists)
+                best_url = _abs_url(hls_url, best.uri)
 
                 result["selected_variant_url"] = _redact_url(best_url)
 
@@ -799,9 +769,7 @@ async def debug_playlist(username: str):
 
                 segs = []
                 for s in variant_playlist.segments[:5]:
-                    seg_url = s.uri or ""
-                    if seg_url and not seg_url.startswith("http"):
-                        seg_url = urljoin(best_url, seg_url)
+                    seg_url = _abs_url(best_url, s.uri) if s.uri else ""
                     segs.append({"uri": _redact_url(seg_url), "duration": s.duration})
                 result["first_segments"] = segs
 
@@ -809,9 +777,7 @@ async def debug_playlist(username: str):
                 result["direct_segment_count"] = len(master_playlist.segments)
                 segs = []
                 for s in master_playlist.segments[:5]:
-                    seg_url = s.uri or ""
-                    if seg_url and not seg_url.startswith("http"):
-                        seg_url = urljoin(hls_url, seg_url)
+                    seg_url = _abs_url(hls_url, s.uri) if s.uri else ""
                     segs.append({"uri": _redact_url(seg_url), "duration": s.duration})
                 result["first_segments"] = segs
             else:
@@ -820,8 +786,6 @@ async def debug_playlist(username: str):
 
         result["logs"] = _redact_text_urls(log_capture.getvalue())
         return result
-    finally:
-        logging.getLogger("downloader").removeHandler(handler)
 
 
 def main():

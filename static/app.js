@@ -98,15 +98,6 @@
   }
 
   // --- Utility ---
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
   function formatBytes(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB'];
@@ -121,18 +112,6 @@
     const s = Math.floor(seconds % 60);
     if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }
-
-  // --- API calls ---
-  async function apiCall(url, options = {}) {
-    const resp = await fetch(url, { ...options });
-    if (!resp.ok) {
-      const body = await resp.text();
-      let msg;
-      try { msg = JSON.parse(body).detail || body; } catch { msg = body; }
-      throw new Error(msg);
-    }
-    return resp;
   }
 
   // --- Start Download ---

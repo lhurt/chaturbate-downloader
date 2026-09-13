@@ -70,16 +70,7 @@ async def _fetch_room_status_edge_ajax(
     client: httpx.AsyncClient, username: str
 ) -> Optional[str]:
     """Status fallback via get_edge_hls_url_ajax (see fetch_room_status)."""
-    csrf_token = uuid.uuid4().hex.upper()[:32]
-    headers = {
-        **DEFAULT_HEADERS,
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": csrf_token,
-        "Referer": ROOM_URL.format(username=username),
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    cookies = {"csrftoken": csrf_token}
-    data = urlencode({"room_slug": username, "bandwidth": "high"})
+    headers, cookies, data = _build_edge_ajax_request(username)
     try:
         resp = await client.post(
             EDGE_HLS_API, content=data, headers=headers, cookies=cookies
@@ -90,6 +81,22 @@ async def _fetch_room_status_edge_ajax(
     except Exception as exc:
         logger.debug("fetch_room_status (edge_ajax) failed for %s: %s", username, exc)
         return None
+
+
+def _build_edge_ajax_request(username: str) -> tuple[dict, dict, str]:
+    """Build the CSRF-protected headers/cookies/form-data for get_edge_hls_url_ajax."""
+    csrf_token = uuid.uuid4().hex.upper()[:32]
+    headers = {
+        **DEFAULT_HEADERS,
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRFToken": csrf_token,
+        "Referer": ROOM_URL.format(username=username),
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    cookies = {"csrftoken": csrf_token}
+    data = urlencode({"room_slug": username, "bandwidth": "high"})
+    return headers, cookies, data
+
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -191,16 +198,7 @@ async def _strategy_edge_ajax(
     client: httpx.AsyncClient, username: str
 ) -> Optional[str]:
     """Strategy 3: get_edge_hls_url_ajax with CSRF token."""
-    csrf_token = uuid.uuid4().hex.upper()[:32]
-    headers = {
-        **DEFAULT_HEADERS,
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": csrf_token,
-        "Referer": ROOM_URL.format(username=username),
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    cookies = {"csrftoken": csrf_token}
-    data = urlencode({"room_slug": username, "bandwidth": "high"})
+    headers, cookies, data = _build_edge_ajax_request(username)
 
     try:
         resp = await client.post(
