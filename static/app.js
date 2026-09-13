@@ -11,7 +11,7 @@
     fileDownload: (filename) => `/api/downloads/file/${encodeURIComponent(filename)}`,
     listFiles:    '/api/downloads/list',
     deleteFile:   (filename)  => `/api/downloads/${encodeURIComponent(filename)}`,
-    contactSheet: (filename) => `/api/downloads/contact-sheet/${encodeURIComponent(filename)}`,
+    contactSheet: (filename, regenerate) => `/api/downloads/contact-sheet/${encodeURIComponent(filename)}${regenerate ? '?regenerate=true' : ''}`,
     generateAllSheets: '/api/downloads/contact-sheets/generate-all',
   };
 
@@ -541,9 +541,10 @@
           ${file.filename ? (() => {
             const generating = generatingContactSheets.has(file.filename);
             const viewable = file.has_contact_sheet && !generating;
+            const generateLabel = generating ? 'Generating…' : (file.has_contact_sheet ? 'Regenerate' : 'Contact sheet');
             return `
           <div class="contact-sheet-group" data-filename="${escapeHtml(file.filename)}">
-            <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-generate" ${generating ? 'disabled' : ''}>${generating ? 'Generating…' : 'Contact sheet'}</button>
+            <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-generate" data-has-sheet="${file.has_contact_sheet ? 'true' : 'false'}" title="${file.has_contact_sheet ? 'Regenerate the contact sheet' : 'Generate a contact sheet'}" ${generating ? 'disabled' : ''}>${generateLabel}</button>
             <button type="button" class="btn btn--ghost btn--sm btn-contact-sheet-view" aria-label="View contact sheet" title="${viewable ? 'View contact sheet' : 'Generate the contact sheet first'}" ${viewable ? '' : 'disabled'}>
               ${EYE_ICON_SVG}
             </button>
@@ -599,6 +600,9 @@
   const contactSheetFullpageBtn = document.getElementById('contact-sheet-fullpage');
   const contactSheetNaturalSizeEl = document.getElementById('contact-sheet-natural-size');
   let contactSheetObjectUrl = null;
+  let lastOpenedContactSheetFilename = null;
+  let lastContactSheetScroll = { top: 0, left: 0 };
+  let pendingContactSheetScroll = null;
 
   const CONTACT_SHEET_MIN_ZOOM = 0.25;
   const CONTACT_SHEET_MAX_ZOOM = 4;
@@ -637,6 +641,14 @@
   contactSheetModalImg.addEventListener('load', () => {
     updateContactSheetNaturalSize();
     applyContactSheetZoom();
+    // The scrollable area only has real dimensions once the image has actually
+    // loaded, so the intended scroll offset (top for a new file, or the saved
+    // one for a reopened file) has to be (re-)applied here, not at open time.
+    if (pendingContactSheetScroll) {
+      contactSheetModalBody.scrollTop = pendingContactSheetScroll.top;
+      contactSheetModalBody.scrollLeft = pendingContactSheetScroll.left;
+      pendingContactSheetScroll = null;
+    }
   });
 
   function setContactSheetZoom(zoom, clientX, clientY) {
@@ -721,12 +733,24 @@
   function openContactSheetModal(filename) {
     contactSheetModalTitle.textContent = filename;
     resetContactSheetView();
+    const isDifferentFile = filename !== lastOpenedContactSheetFilename;
+    lastOpenedContactSheetFilename = filename;
+    // Closing clears the <img> src, which collapses the scrollable area, so the
+    // offset can't just be left alone -- it's explicitly reset to the top for a
+    // different file, or restored to where this same file was left, once the
+    // freshly (re)loaded image gives the container real dimensions again (see
+    // the image 'load' listener above).
+    pendingContactSheetScroll = isDifferentFile ? { top: 0, left: 0 } : lastContactSheetScroll;
     contactSheetModal.hidden = false;
     contactSheetModal.setAttribute('aria-hidden', 'false');
     document.addEventListener('keydown', onContactSheetModalKeydown);
   }
 
   function closeContactSheetModal() {
+    lastContactSheetScroll = {
+      top: contactSheetModalBody.scrollTop,
+      left: contactSheetModalBody.scrollLeft,
+    };
     contactSheetModal.hidden = true;
     contactSheetModal.setAttribute('aria-hidden', 'true');
     contactSheetModalImg.src = '';
@@ -788,7 +812,7 @@
     el.addEventListener('click', closeVideoModal);
   });
 
-  async function fetchContactSheetBlob(group) {
+  async function fetchContactSheetBlob(group, regenerate = false) {
     const filename = group.dataset.filename;
     const genBtn = group.querySelector('.btn-contact-sheet-generate');
     const viewBtn = group.querySelector('.btn-contact-sheet-view');
@@ -800,11 +824,12 @@
     genBtn.textContent = 'Generating…';
 
     try {
-      const res = await fetch(API.contactSheet(filename));
+      const res = await fetch(API.contactSheet(filename, regenerate));
       if (!res.ok) throw new Error('Failed to load contact sheet');
       const blob = await res.blob();
       viewBtn.disabled = false;
       viewBtn.title = 'View contact sheet';
+      genBtn.dataset.hasSheet = 'true';
       return blob;
     } catch (err) {
       toast(`Could not generate contact sheet: ${err.message}`, 'error');
@@ -813,13 +838,17 @@
     } finally {
       generatingContactSheets.delete(filename);
       genBtn.disabled = false;
-      genBtn.textContent = 'Contact sheet';
+      const hasSheet = genBtn.dataset.hasSheet === 'true';
+      genBtn.textContent = hasSheet ? 'Regenerate' : 'Contact sheet';
+      genBtn.title = hasSheet ? 'Regenerate the contact sheet' : 'Generate a contact sheet';
     }
   }
 
   async function handleGenerateContactSheet(group) {
-    const blob = await fetchContactSheetBlob(group);
-    if (blob) toast('Contact sheet ready', 'success');
+    const genBtn = group.querySelector('.btn-contact-sheet-generate');
+    const regenerate = genBtn?.dataset.hasSheet === 'true';
+    const blob = await fetchContactSheetBlob(group, regenerate);
+    if (blob) toast(regenerate ? 'Contact sheet regenerated' : 'Contact sheet ready', 'success');
   }
 
   async function handleViewContactSheet(group) {

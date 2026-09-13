@@ -684,6 +684,55 @@ body {
   outline-offset: 2px;
 }
 
+.header__toggles {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.design-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: var(--border-w) solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.design-toggle__btn {
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  border-right: var(--border-w) solid var(--border);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 80ms ease-out, color 80ms ease-out;
+}
+
+.design-toggle__btn:last-child {
+  border-right: 0;
+}
+
+.design-toggle__btn:hover {
+  background: var(--surface-2);
+}
+
+.design-toggle__btn--active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.design-toggle__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── Download cards ── */
 
 .downloads-grid {

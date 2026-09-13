@@ -127,12 +127,17 @@ async def download_file_by_name(filename: str):
 
 
 @router.get("/api/downloads/contact-sheet/{filename}")
-async def get_contact_sheet(filename: str):
+async def get_contact_sheet(filename: str, request: Request, regenerate: bool = False):
     """Return a per-minute contact-sheet thumbnail for a completed recording,
-    generating and caching it next to the source file on first request."""
+    generating and caching it next to the source file on first request.
+    Pass `regenerate=true` to discard an existing sheet and rebuild it."""
     file_path = app._safe_downloads_path(filename)
     if not file_path.exists() or not app._is_completed_media_file(file_path):
         raise HTTPException(status_code=404, detail="File not found")
+
+    if regenerate:
+        app._require_trusted_origin(request)
+        app._contact_sheet_path(file_path).unlink(missing_ok=True)
 
     if not await app._ensure_contact_sheet(file_path):
         raise HTTPException(status_code=502, detail="Failed to generate contact sheet")

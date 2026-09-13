@@ -905,6 +905,57 @@ def test_contact_sheet_endpoint_forwards_env_configured_options(tmp_path, monkey
     assert len(calls) == 1
 
 
+def test_contact_sheet_endpoint_regenerate_rebuilds_existing_sheet(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    calls = []
+
+    def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+        calls.append(output_jpg)
+        Path(output_jpg).write_bytes(f"jpegbytes{len(calls)}".encode())
+        return True
+
+    monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+    client = TestClient(webapp.app)
+    first = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+    assert first.status_code == 200
+    assert first.content == b"jpegbytes1"
+
+    # Without regenerate=true, a second request reuses the cached file.
+    cached = client.get(f"/api/downloads/contact-sheet/{completed.name}")
+    assert cached.content == b"jpegbytes1"
+    assert len(calls) == 1
+
+    # With regenerate=true, the existing sheet is discarded and rebuilt.
+    regenerated = client.get(f"/api/downloads/contact-sheet/{completed.name}?regenerate=true")
+    assert regenerated.status_code == 200
+    assert regenerated.content == b"jpegbytes2"
+    assert len(calls) == 2
+
+
+def test_contact_sheet_endpoint_regenerate_rejects_cross_site_request(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+        Path(output_jpg).write_bytes(b"jpegbytes")
+        return True
+
+    monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+    client = TestClient(webapp.app)
+    response = client.get(
+        f"/api/downloads/contact-sheet/{completed.name}?regenerate=true",
+        headers={"sec-fetch-site": "cross-site"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_contact_sheet_endpoint_rejects_non_media_file(tmp_path, monkeypatch):
     temp_track = tmp_path / "alice_2026-04-27_10-00-00_video.mp4"
     temp_track.write_bytes(b"temp")
