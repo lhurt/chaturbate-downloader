@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import sqlite3
 import sys
 from pathlib import Path
@@ -139,6 +140,78 @@ def test_scheduler_starts_enabled_streamer_and_records_download():
             ("start", "alice"),
             ("upsert", "alice"),
         ]
+
+    asyncio.run(scenario())
+
+
+def test_schedule_is_a_noop_while_a_task_for_the_same_username_is_running():
+    async def scenario():
+        starts = 0
+        release = asyncio.Event()
+
+        class FakeTracker:
+            async def is_auto_download_enabled(self, username):
+                nonlocal starts
+                starts += 1
+                await release.wait()
+                return False
+
+        scheduler = AutoDownloadScheduler(object(), FakeTracker())
+
+        scheduler.schedule("alice")
+        first_task = scheduler._tasks["alice"]
+        await asyncio.sleep(0)  # let the task actually start running
+        scheduler.schedule("alice")  # should not replace the in-flight task
+
+        assert scheduler._tasks["alice"] is first_task
+        assert starts == 1
+
+        release.set()
+        await first_task
+
+    asyncio.run(scenario())
+
+
+def test_finish_handles_a_cancelled_task_without_raising():
+    async def scenario():
+        release = asyncio.Event()
+
+        class FakeTracker:
+            async def is_auto_download_enabled(self, username):
+                await release.wait()
+                return False
+
+        scheduler = AutoDownloadScheduler(object(), FakeTracker())
+        scheduler.schedule("alice")
+        task = scheduler._tasks["alice"]
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # Let the done-callback (_finish) actually run.
+        await asyncio.sleep(0)
+
+        assert "alice" not in scheduler._tasks
+
+    asyncio.run(scenario())
+
+
+def test_stop_cancels_all_pending_tasks_and_clears_them():
+    async def scenario():
+        release = asyncio.Event()
+
+        class FakeTracker:
+            async def is_auto_download_enabled(self, username):
+                await release.wait()
+                return False
+
+        scheduler = AutoDownloadScheduler(object(), FakeTracker())
+        scheduler.schedule("alice")
+        scheduler.schedule("bob")
+
+        await scheduler.stop()
+
+        assert scheduler._tasks == {}
 
     asyncio.run(scenario())
 
