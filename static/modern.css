@@ -316,6 +316,8 @@
 
 [data-design="modern"] .tracked-card__switch,
 [data-design="modern"] .tracked-row__auto .tracked-card__switch {
+  display: flex;
+  align-items: center;
   border: none;
   border-radius: var(--radius-pill);
   background: var(--surface-2);
