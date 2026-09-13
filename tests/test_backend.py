@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -1508,3 +1509,178 @@ def test_delete_tracked_prunes_thumb_cache(monkeypatch):
         assert "alice" not in webapp._thumb_cache
 
     asyncio.run(scenario())
+
+
+def test_delete_tracked_endpoint_404s_for_untracked_username(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def delete(self, username):
+                return False
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+        try:
+            await webapp.delete_tracked(FakeRequest(), "alice")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError("expected HTTPException")
+
+    asyncio.run(scenario())
+
+
+def test_list_tracked_marks_rows_as_downloading_from_active_status(monkeypatch):
+    class FakeTracker:
+        async def list_all(self):
+            return [{"username": "alice"}, {"username": "bob"}]
+
+    class FakeManager:
+        def get_status(self):
+            return {"downloads": [{"username": "alice", "active": True}]}
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+    monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+    result = asyncio.run(webapp.list_tracked())
+
+    assert result["polled_every_seconds"] == webapp.POLL_INTERVAL_SECONDS
+    by_username = {row["username"]: row["downloading"] for row in result["tracked"]}
+    assert by_username == {"alice": True, "bob": False}
+
+
+def test_add_tracked_endpoint_tracks_and_records_initial_status(monkeypatch):
+    async def scenario():
+        updates = []
+
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def add(self, username):
+                return True
+
+            async def update_status(self, username, status):
+                updates.append((username, status))
+
+        async def fake_fetch_room_status(client, username):
+            return "public"
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+        monkeypatch.setattr(webapp.auto_download_scheduler, "schedule", lambda username: None)
+
+        result = await webapp.add_tracked(FakeRequest(), "Alice")
+
+        assert result == {"status": "added", "username": "alice"}
+        assert updates == [("alice", "public")]
+
+    asyncio.run(scenario())
+
+
+def test_add_tracked_endpoint_conflicts_when_already_tracked(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def add(self, username):
+                return False
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+        try:
+            await webapp.add_tracked(FakeRequest(), "alice")
+        except HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("expected HTTPException")
+
+    asyncio.run(scenario())
+
+
+def test_add_tracked_endpoint_succeeds_even_if_initial_status_fetch_fails(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def add(self, username):
+                return True
+
+        async def fake_fetch_room_status(client, username):
+            raise httpx.ConnectError("boom")
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+
+        result = await webapp.add_tracked(FakeRequest(), "alice")
+
+        assert result == {"status": "added", "username": "alice"}
+
+    asyncio.run(scenario())
+
+
+def test_get_thumbnail_returns_cached_response_without_a_network_call():
+    async def scenario():
+        webapp._thumb_cache["alice"] = (time.time(), b"cached-bytes", "image/jpeg")
+        try:
+            response = await webapp.get_thumbnail("alice")
+        finally:
+            webapp._thumb_cache.pop("alice", None)
+        return response
+
+    response = asyncio.run(scenario())
+
+    assert response.body == b"cached-bytes"
+    assert response.media_type == "image/jpeg"
+
+
+def test_get_thumbnail_fetches_and_caches_on_miss(monkeypatch):
+    real_async_client = httpx.AsyncClient
+
+    def handler(request):
+        return httpx.Response(200, content=b"fresh-bytes", headers={"content-type": "image/jpeg"})
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **k: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+    webapp._thumb_cache.pop("alice", None)
+
+    async def scenario():
+        try:
+            return await webapp.get_thumbnail("alice")
+        finally:
+            webapp._thumb_cache.pop("alice", None)
+
+    response = asyncio.run(scenario())
+
+    assert response.body == b"fresh-bytes"
+
+
+def test_get_thumbnail_raises_404_when_upstream_has_none(monkeypatch):
+    real_async_client = httpx.AsyncClient
+
+    def handler(request):
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **k: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+    webapp._thumb_cache.pop("alice", None)
+
+    async def scenario():
+        await webapp.get_thumbnail("alice")
+
+    try:
+        asyncio.run(scenario())
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("expected HTTPException")
