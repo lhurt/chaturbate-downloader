@@ -17,3 +17,5 @@ services:
       MODAL_WIDTH_PERCENT: ${MODAL_WIDTH_PERCENT:-80}
     volumes:
       - ./downloads:/app/downloads
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
