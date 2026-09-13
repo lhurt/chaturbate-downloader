@@ -408,7 +408,14 @@ uv run pytest
 
 The current tests cover validation, path/file safety, completed-file listing,
 tracked streamer APIs, origin checks, URL redaction, download-manager
-start/stop race regressions, and ffmpeg mux cancellation / timeout behavior.
+start/stop race regressions, ffmpeg mux cancellation / timeout behavior, the
+HLS URL extraction strategies, and the SQLite-backed tracker's CRUD.
+
+To check coverage:
+
+```bash
+uv run pytest --cov=. --cov-report=term-missing
+```
 
 ---
 
