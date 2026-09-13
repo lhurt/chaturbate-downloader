@@ -236,3 +236,7 @@ class DownloadManager:
             info["active"] = isinstance(task, asyncio.Task) and not task.done()
             return info
         return None
+
+    def active_usernames(self) -> set[str]:
+        """Usernames currently reserved or downloading (safe to skip during cleanup)."""
+        return set(self._tasks.keys())

@@ -45,7 +45,10 @@ manager = DownloadManager(
     output_dir=DOWNLOADS_DIR, on_complete=lambda path: _schedule_contact_sheet(Path(path))
 )
 tracker = Tracker(DOWNLOADS_DIR / "tracked.db")
-auto_download_scheduler = AutoDownloadScheduler(manager, tracker)
+AUTO_DOWNLOAD_MAX_CONCURRENT = int(os.getenv("AUTO_DOWNLOAD_MAX_CONCURRENT", "4"))
+auto_download_scheduler = AutoDownloadScheduler(
+    manager, tracker, max_concurrent=AUTO_DOWNLOAD_MAX_CONCURRENT
+)
 
 POLL_INTERVAL_SECONDS = 60
 
@@ -53,6 +56,10 @@ USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 COMPLETED_STEM_RE = re.compile(
     r"^(?P<username>.+)_(?P<timestamp>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$"
 )
+TEMP_TRACK_STEM_RE = re.compile(
+    r"^(?P<username>.+)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(?:video|audio)$"
+)
+CONTACT_SHEET_STEM_RE = re.compile(r"^(?P<source_stem>.+)_contactsheet$")
 
 ALLOWED_ORIGIN_SET = {
     origin.strip().rstrip("/")
@@ -99,6 +106,32 @@ def _is_completed_media_file(path: Path) -> bool:
     )
 
 
+def _cleanup_orphaned_temp_files() -> list[str]:
+    """Remove leftover `_video.mp4`/`_audio.mp4` temp tracks with no owning
+    download. These are produced by HLSDownloader mid-download and are only
+    ever renamed/removed by a normal finalize(); a crash, force-cancel after
+    the stop watchdog, or ungraceful shutdown skips that step and leaves them
+    behind. They're intentionally hidden from every read endpoint, so this is
+    the only path that reclaims them. Safe to call any time: usernames with
+    an active reservation or task are left untouched."""
+    active = manager.active_usernames()
+    removed = []
+    for f in DOWNLOADS_DIR.iterdir():
+        if not f.is_file() or f.suffix != ".mp4":
+            continue
+        match = TEMP_TRACK_STEM_RE.match(f.stem)
+        if not match or match.group("username") in active:
+            continue
+        try:
+            f.unlink()
+            removed.append(f.name)
+        except OSError as exc:
+            logger.warning("Failed to remove orphaned temp file %s: %s", f.name, exc)
+    if removed:
+        logger.info("Removed %d orphaned temp file(s): %s", len(removed), removed)
+    return removed
+
+
 def _username_from_completed_stem(stem: str) -> str:
     """Extract username only when the final suffix is the exact timestamp format."""
     match = COMPLETED_STEM_RE.match(stem)
@@ -137,29 +170,44 @@ def _require_trusted_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Origin is not allowed")
 
 
+def _status_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(15.0),
+        follow_redirects=True,
+        headers={**DEFAULT_HEADERS, "Referer": "https://chaturbate.com/"},
+        **proxy_kwargs(),
+    )
+
+
+async def _check_tracked_status(client: httpx.AsyncClient, username: str) -> Optional[str]:
+    """Fetch and persist one username's live status, scheduling an auto-download
+    if it just went public. Shared by the background poller and the manual
+    refresh endpoints so both paths behave identically."""
+    status = await fetch_room_status(client, username)
+    if status is not None:
+        await tracker.update_status(username, status)
+        if status == "public":
+            auto_download_scheduler.schedule(username)
+    return status
+
+
+async def _refresh_all_tracked_status() -> int:
+    usernames = await tracker.list_usernames()
+    if usernames:
+        async with _status_client() as client:
+            for username in usernames:
+                try:
+                    await _check_tracked_status(client, username)
+                except Exception as exc:
+                    logger.debug("status poll failed for %s: %s", username, exc)
+    _prune_thumb_cache(set(usernames))
+    return len(usernames)
+
+
 async def _poll_tracked_status() -> None:
     while True:
         try:
-            usernames = await tracker.list_usernames()
-            if usernames:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(15.0),
-                    follow_redirects=True,
-                    headers={
-                        **DEFAULT_HEADERS,
-                        "Referer": "https://chaturbate.com/",
-                    },
-                    **proxy_kwargs(),
-                ) as client:
-                    for username in usernames:
-                        try:
-                            status = await fetch_room_status(client, username)
-                            if status is not None:
-                                await tracker.update_status(username, status)
-                                if status == "public":
-                                    auto_download_scheduler.schedule(username)
-                        except Exception as exc:
-                            logger.debug("status poll failed for %s: %s", username, exc)
+            await _refresh_all_tracked_status()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -171,6 +219,8 @@ async def _poll_tracked_status() -> None:
 async def lifespan(app: FastAPI):
     """Handle startup/shutdown."""
     logger.info("Starting Chaturbate Downloader")
+    _cleanup_orphaned_temp_files()
+    _cleanup_orphaned_contact_sheets()
     poll_task = asyncio.create_task(_poll_tracked_status())
     try:
         yield
@@ -326,6 +376,33 @@ def _contact_sheet_path(file_path: Path) -> Path:
     return file_path.with_name(file_path.stem + "_contactsheet.jpg")
 
 
+def _cleanup_orphaned_contact_sheets() -> list[str]:
+    """Remove contact-sheet JPEGs whose source recording no longer exists.
+    `delete_file` removes the sheet alongside the .mp4 when a user deletes
+    through the API, but the .mp4 can also disappear by other means -- a
+    manual `rm`, or an external tool watching `downloads/` (a NAS scanner,
+    jDownloader, etc. -- see the bind mounts in compose.override.yaml) that
+    has no reason to know about the sidecar .jpg. This reclaims those."""
+    removed = []
+    for f in DOWNLOADS_DIR.iterdir():
+        if not f.is_file() or f.suffix != ".jpg":
+            continue
+        match = CONTACT_SHEET_STEM_RE.match(f.stem)
+        if not match:
+            continue
+        source = f.with_name(match.group("source_stem") + ".mp4")
+        if source.exists():
+            continue
+        try:
+            f.unlink()
+            removed.append(f.name)
+        except OSError as exc:
+            logger.warning("Failed to remove orphaned contact sheet %s: %s", f.name, exc)
+    if removed:
+        logger.info("Removed %d orphaned contact sheet(s): %s", len(removed), removed)
+    return removed
+
+
 async def _ensure_contact_sheet(file_path: Path) -> bool:
     """Generate the contact sheet for `file_path` if it doesn't exist yet.
     Safe to call concurrently: a global lock plus a double-checked existence
@@ -380,6 +457,20 @@ async def get_contact_sheet(filename: str):
     return FileResponse(path=str(_contact_sheet_path(file_path)), media_type="image/jpeg")
 
 
+@app.post("/api/downloads/contact-sheets/generate-all")
+async def generate_all_contact_sheets(request: Request):
+    """Manually (re)run contact-sheet generation for every completed file that
+    doesn't have one yet -- the same backfill `CONTACT_SHEET_AUTO_GENERATE`
+    does automatically, callable on demand regardless of that setting."""
+    _require_trusted_origin(request)
+    media_files = [f for f in DOWNLOADS_DIR.iterdir() if _is_completed_media_file(f)]
+    missing = [f for f in media_files if not _contact_sheet_path(f).exists()]
+    results = await asyncio.gather(*(_ensure_contact_sheet(f) for f in missing))
+    generated = [f.name for f, ok in zip(missing, results) if ok]
+    failed = [f.name for f, ok in zip(missing, results) if not ok]
+    return {"generated": generated, "failed": failed, "already_had_one": len(media_files) - len(missing)}
+
+
 _duration_cache: dict[str, Optional[float]] = {}
 
 
@@ -391,10 +482,18 @@ async def _get_duration_seconds(file_path: Path) -> Optional[float]:
     return _duration_cache[key]
 
 
+def _prune_duration_cache(existing_names: set[str]) -> None:
+    """Drop cache entries for files that no longer exist (e.g. removed
+    outside the API), so the dict doesn't grow without bound over time."""
+    for stale in [name for name in _duration_cache if name not in existing_names]:
+        _duration_cache.pop(stale, None)
+
+
 @app.get("/api/downloads/list")
 async def list_downloaded_files():
     """List all downloaded files."""
     media_files = [f for f in DOWNLOADS_DIR.iterdir() if _is_completed_media_file(f)]
+    _prune_duration_cache({f.name for f in media_files})
     durations = await asyncio.gather(*(_get_duration_seconds(f) for f in media_files))
 
     files = []
@@ -427,8 +526,25 @@ async def delete_file(request: Request, filename: str):
     if not file_path.exists() or not _is_completed_media_file(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     file_path.unlink()
+    _contact_sheet_path(file_path).unlink(missing_ok=True)
     _duration_cache.pop(filename, None)
     return {"status": "deleted", "filename": filename}
+
+
+@app.post("/api/downloads/cleanup-orphans")
+async def cleanup_orphans(request: Request):
+    """Manually remove leftover `_video.mp4`/`_audio.mp4` temp tracks from
+    downloads that never finalized (crash, force-cancel, ungraceful
+    shutdown), plus contact sheets whose source recording is gone (deleted
+    outside the API, e.g. by an external tool watching `downloads/`). Also
+    runs automatically once at server startup."""
+    _require_trusted_origin(request)
+    removed_temp_files = _cleanup_orphaned_temp_files()
+    removed_contact_sheets = _cleanup_orphaned_contact_sheets()
+    return {
+        "removed_temp_files": removed_temp_files,
+        "removed_contact_sheets": removed_contact_sheets,
+    }
 
 
 # ─── Tracked Streamers ────────────────────────────────────
@@ -438,6 +554,13 @@ _THUMB_URL = "https://thumb.live.mmcdn.com/riw/{username}.jpg"
 _THUMB_TTL_SECONDS = 30
 _thumb_cache: dict[str, tuple[float, bytes, str]] = {}
 _thumb_lock = asyncio.Lock()
+
+
+def _prune_thumb_cache(valid_usernames: set[str]) -> None:
+    """Drop cached thumbnails for usernames no longer tracked, so the cache
+    doesn't grow forever across the lifetime of a long-running server."""
+    for stale in [name for name in _thumb_cache if name not in valid_usernames]:
+        _thumb_cache.pop(stale, None)
 
 
 @app.get("/api/tracked")
@@ -465,15 +588,8 @@ async def add_tracked(request: Request, username: str):
         raise HTTPException(status_code=409, detail="Username already tracked")
 
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(15.0),
-            follow_redirects=True,
-            headers={**DEFAULT_HEADERS, "Referer": "https://chaturbate.com/"},
-            **proxy_kwargs(),
-        ) as client:
-            status = await fetch_room_status(client, username)
-            if status is not None:
-                await tracker.update_status(username, status)
+        async with _status_client() as client:
+            await _check_tracked_status(client, username)
     except Exception as exc:
         logger.debug("initial status fetch failed for %s: %s", username, exc)
 
@@ -487,7 +603,30 @@ async def delete_tracked(request: Request, username: str):
     removed = await tracker.delete(username)
     if not removed:
         raise HTTPException(status_code=404, detail="Username not tracked")
+    _thumb_cache.pop(username, None)
     return {"status": "deleted", "username": username}
+
+
+@app.post("/api/tracked/{username}/refresh")
+async def refresh_tracked(request: Request, username: str):
+    """Manually re-check one streamer's live status right now instead of
+    waiting for the next background poll (up to `POLL_INTERVAL_SECONDS`)."""
+    _require_trusted_origin(request)
+    username = _validate_username(username)
+    if username not in set(await tracker.list_usernames()):
+        raise HTTPException(status_code=404, detail="Username not tracked")
+    async with _status_client() as client:
+        status = await _check_tracked_status(client, username)
+    return {"username": username, "status": status}
+
+
+@app.post("/api/tracked/refresh-all")
+async def refresh_all_tracked(request: Request):
+    """Manually run the same status check the background poller performs
+    every `POLL_INTERVAL_SECONDS`, immediately, for every tracked username."""
+    _require_trusted_origin(request)
+    count = await _refresh_all_tracked_status()
+    return {"status": "refreshed", "count": count}
 
 
 @app.patch("/api/tracked/{username}/auto-download")

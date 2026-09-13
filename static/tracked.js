@@ -9,6 +9,7 @@
     thumbnail:   (username) => `/api/thumbnail/${encodeURIComponent(username)}`,
     startDownload: (username) => `/api/download/start?username=${encodeURIComponent(username)}&output_format=mp4`,
     autoDownload: (username, enabled) => `/api/tracked/${encodeURIComponent(username)}/auto-download?enabled=${enabled}`,
+    refreshAll:  '/api/tracked/refresh-all',
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -308,9 +309,20 @@
   });
 
   if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => {
-      lastRendered = null;
-      fetchTracked();
+    refreshBtn.addEventListener('click', async () => {
+      refreshBtn.disabled = true;
+      const label = refreshBtn.textContent;
+      refreshBtn.textContent = 'Refreshing…';
+      try {
+        await apiCall(API.refreshAll, { method: 'POST' });
+      } catch (err) {
+        alert(`Failed to refresh: ${err.message}`);
+      } finally {
+        lastRendered = null;
+        await fetchTracked();
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = label;
+      }
     });
   }
 

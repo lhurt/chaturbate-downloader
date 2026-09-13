@@ -12,6 +12,7 @@
     listFiles:    '/api/downloads/list',
     deleteFile:   (filename)  => `/api/downloads/${encodeURIComponent(filename)}`,
     contactSheet: (filename) => `/api/downloads/contact-sheet/${encodeURIComponent(filename)}`,
+    generateAllSheets: '/api/downloads/contact-sheets/generate-all',
   };
 
   let activeDownloads = {};
@@ -34,6 +35,7 @@
   const inputDuration  = $('#max-duration');
   const btnStart       = $('#btn-start');
   const btnStopAll     = $('#btn-stop-all');
+  const btnGenerateAllSheets = $('#btn-generate-all-sheets');
   const activeContainer = $('#active-downloads');
   const completedContainer = $('#completed-downloads');
   const activeEmpty    = $('#active-empty');
@@ -180,6 +182,31 @@
     } finally {
       btnStopAll.disabled = false;
       btnStopAll.textContent = 'Stop All';
+    }
+  }
+
+  // --- Generate all contact sheets ---
+  async function generateAllContactSheets() {
+    if (!btnGenerateAllSheets) return;
+    btnGenerateAllSheets.disabled = true;
+    const label = btnGenerateAllSheets.textContent;
+    btnGenerateAllSheets.textContent = 'Generating…';
+    try {
+      const resp = await apiCall(API.generateAllSheets, { method: 'POST' });
+      const result = await resp.json();
+      if (result.failed.length) {
+        toast(`Generated ${result.generated.length}, failed ${result.failed.length}`, 'error');
+      } else if (result.generated.length) {
+        toast(`Generated ${result.generated.length} contact sheet(s)`, 'success');
+      } else {
+        toast('All completed downloads already have a contact sheet', 'info');
+      }
+      fetchFiles();
+    } catch (err) {
+      toast(`Failed to generate contact sheets: ${err.message}`, 'error');
+    } finally {
+      btnGenerateAllSheets.disabled = false;
+      btnGenerateAllSheets.textContent = label;
     }
   }
 
@@ -890,6 +917,10 @@
 
   btnStopAll.addEventListener('click', () => {
     stopAll();
+  });
+
+  btnGenerateAllSheets?.addEventListener('click', () => {
+    generateAllContactSheets();
   });
 
   // --- Initialize ---

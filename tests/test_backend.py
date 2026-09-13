@@ -1082,3 +1082,391 @@ def test_downloads_list_does_not_auto_generate_when_disabled(tmp_path, monkeypat
         assert calls == []
 
     asyncio.run(scenario())
+
+
+# ─── Orphaned temp file cleanup ───────────────────────────
+
+
+def test_cleanup_orphaned_temp_files_removes_unowned_tracks(tmp_path, monkeypatch):
+    orphan_video = tmp_path / "alice_2026-04-27_10-00-00_video.mp4"
+    orphan_audio = tmp_path / "alice_2026-04-27_10-00-00_audio.mp4"
+    owned_video = tmp_path / "bob_2026-04-27_10-00-00_video.mp4"
+    completed = tmp_path / "carol_2026-04-27_10-00-00.mp4"
+    for f in (orphan_video, orphan_audio, owned_video, completed):
+        f.write_bytes(b"data")
+
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    class FakeManager:
+        def active_usernames(self):
+            return {"bob"}
+
+    monkeypatch.setattr(webapp, "manager", FakeManager())
+
+    removed = webapp._cleanup_orphaned_temp_files()
+
+    assert set(removed) == {orphan_video.name, orphan_audio.name}
+    assert not orphan_video.exists()
+    assert not orphan_audio.exists()
+    assert owned_video.exists()
+    assert completed.exists()
+
+
+def test_cleanup_orphans_endpoint_requires_trusted_origin(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/api/downloads/cleanup-orphans", headers={"sec-fetch-site": "cross-site"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_cleanup_orphans_endpoint_removes_orphans(tmp_path, monkeypatch):
+    orphan_track = tmp_path / "alice_2026-04-27_10-00-00_video.mp4"
+    orphan_track.write_bytes(b"data")
+    orphan_sheet = tmp_path / "bob_2026-04-27_11-00-00_contactsheet.jpg"
+    orphan_sheet.write_bytes(b"jpeg")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/api/downloads/cleanup-orphans", headers={"origin": "http://localhost:8000"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "removed_temp_files": [orphan_track.name],
+        "removed_contact_sheets": [orphan_sheet.name],
+    }
+    assert not orphan_track.exists()
+    assert not orphan_sheet.exists()
+
+
+# ─── Orphaned contact sheets (source recording missing) ────
+
+
+def test_cleanup_orphaned_contact_sheets_removes_ones_without_a_source(tmp_path, monkeypatch):
+    orphan_sheet = tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg"
+    orphan_sheet.write_bytes(b"jpeg")
+    kept_video = tmp_path / "bob_2026-04-27_11-00-00.mp4"
+    kept_video.write_bytes(b"done")
+    kept_sheet = tmp_path / "bob_2026-04-27_11-00-00_contactsheet.jpg"
+    kept_sheet.write_bytes(b"jpeg")
+    unrelated_jpg = tmp_path / "not_a_contact_sheet.jpg"
+    unrelated_jpg.write_bytes(b"jpeg")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    removed = webapp._cleanup_orphaned_contact_sheets()
+
+    assert removed == [orphan_sheet.name]
+    assert not orphan_sheet.exists()
+    assert kept_sheet.exists()
+    assert unrelated_jpg.exists()
+
+
+def test_lifespan_startup_cleans_up_orphaned_contact_sheets(tmp_path, monkeypatch):
+    orphan_sheet = tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg"
+    orphan_sheet.write_bytes(b"jpeg")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    class FakeSchedulerStop:
+        async def stop(self):
+            pass
+
+    class FakeManagerStopAll:
+        def active_usernames(self):
+            return set()
+
+        async def stop_all(self):
+            return {"status": "all_stopped"}
+
+    class FakeTrackerNoop:
+        async def list_usernames(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(webapp, "auto_download_scheduler", FakeSchedulerStop())
+    monkeypatch.setattr(webapp, "manager", FakeManagerStopAll())
+    monkeypatch.setattr(webapp, "tracker", FakeTrackerNoop())
+
+    with TestClient(webapp.app):
+        pass
+
+    assert not orphan_sheet.exists()
+
+
+def test_lifespan_startup_cleans_up_orphans(tmp_path, monkeypatch):
+    orphan = tmp_path / "alice_2026-04-27_10-00-00_video.mp4"
+    orphan.write_bytes(b"data")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    class FakeSchedulerStop:
+        async def stop(self):
+            pass
+
+    class FakeManagerStopAll:
+        def active_usernames(self):
+            return set()
+
+        async def stop_all(self):
+            return {"status": "all_stopped"}
+
+    class FakeTrackerNoop:
+        async def list_usernames(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(webapp, "auto_download_scheduler", FakeSchedulerStop())
+    monkeypatch.setattr(webapp, "manager", FakeManagerStopAll())
+    monkeypatch.setattr(webapp, "tracker", FakeTrackerNoop())
+
+    with TestClient(webapp.app):
+        pass
+
+    assert not orphan.exists()
+
+
+# ─── Deleting a completed file also removes its contact sheet ─────
+
+
+def test_delete_file_removes_contact_sheet_and_duration_cache(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    sheet = tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg"
+    sheet.write_bytes(b"jpeg")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+    webapp._duration_cache[completed.name] = 123.0
+
+    client = TestClient(webapp.app)
+    response = client.delete(
+        f"/api/downloads/{completed.name}", headers={"origin": "http://localhost:8000"}
+    )
+
+    assert response.status_code == 200
+    assert not completed.exists()
+    assert not sheet.exists()
+    assert completed.name not in webapp._duration_cache
+
+
+def test_delete_file_without_contact_sheet_still_succeeds(tmp_path, monkeypatch):
+    completed = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    completed.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    client = TestClient(webapp.app)
+    response = client.delete(
+        f"/api/downloads/{completed.name}", headers={"origin": "http://localhost:8000"}
+    )
+
+    assert response.status_code == 200
+    assert not completed.exists()
+
+
+# ─── Manual "generate all contact sheets" endpoint ─────────
+
+
+def test_generate_all_contact_sheets_backfills_missing_only(tmp_path, monkeypatch):
+    has_sheet = tmp_path / "alice_2026-04-27_10-00-00.mp4"
+    has_sheet.write_bytes(b"done")
+    (tmp_path / "alice_2026-04-27_10-00-00_contactsheet.jpg").write_bytes(b"jpeg")
+    missing_sheet = tmp_path / "bob_2026-04-27_11-00-00.mp4"
+    missing_sheet.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+
+    calls = []
+
+    def fake_generate_contact_sheet(input_file, output_jpg, *args, **kwargs):
+        calls.append(input_file)
+        Path(output_jpg).write_bytes(b"jpeg")
+        return True
+
+    monkeypatch.setattr(webapp, "generate_contact_sheet", fake_generate_contact_sheet)
+
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/api/downloads/contact-sheets/generate-all",
+        headers={"origin": "http://localhost:8000"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated"] == [missing_sheet.name]
+    assert body["failed"] == []
+    assert body["already_had_one"] == 1
+    assert len(calls) == 1
+
+
+def test_generate_all_contact_sheets_reports_failures(tmp_path, monkeypatch):
+    missing_sheet = tmp_path / "bob_2026-04-27_11-00-00.mp4"
+    missing_sheet.write_bytes(b"done")
+    monkeypatch.setattr(webapp, "DOWNLOADS_DIR", tmp_path)
+    monkeypatch.setattr(webapp, "generate_contact_sheet", lambda *a, **k: False)
+
+    client = TestClient(webapp.app)
+    response = client.post(
+        "/api/downloads/contact-sheets/generate-all",
+        headers={"origin": "http://localhost:8000"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["generated"] == []
+    assert body["failed"] == [missing_sheet.name]
+
+
+# ─── Manual tracked-status refresh ─────────────────────────
+
+
+def test_check_tracked_status_updates_tracker_and_schedules_auto_download(monkeypatch):
+    async def scenario():
+        updates = []
+        scheduled = []
+
+        class FakeTracker:
+            async def update_status(self, username, status):
+                updates.append((username, status))
+
+        class FakeScheduler:
+            def schedule(self, username):
+                scheduled.append(username)
+
+        async def fake_fetch_room_status(client, username):
+            return "public"
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "auto_download_scheduler", FakeScheduler())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+
+        status = await webapp._check_tracked_status(object(), "alice")
+
+        assert status == "public"
+        assert updates == [("alice", "public")]
+        assert scheduled == ["alice"]
+
+    asyncio.run(scenario())
+
+
+def test_refresh_tracked_endpoint_checks_status_immediately(monkeypatch):
+    async def scenario():
+        updates = []
+
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def list_usernames(self):
+                return ["alice"]
+
+            async def update_status(self, username, status):
+                updates.append((username, status))
+
+        async def fake_fetch_room_status(client, username):
+            return "offline"
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+
+        result = await webapp.refresh_tracked(FakeRequest(), "Alice")
+
+        assert result == {"username": "alice", "status": "offline"}
+        assert updates == [("alice", "offline")]
+
+    asyncio.run(scenario())
+
+
+def test_refresh_tracked_endpoint_404s_for_untracked_username(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def list_usernames(self):
+                return []
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+        try:
+            await webapp.refresh_tracked(FakeRequest(), "alice")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError("expected HTTPException")
+
+    asyncio.run(scenario())
+
+
+def test_refresh_all_tracked_endpoint_checks_every_username(monkeypatch):
+    async def scenario():
+        checked = []
+
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def list_usernames(self):
+                return ["alice", "bob"]
+
+            async def update_status(self, username, status):
+                checked.append((username, status))
+
+        async def fake_fetch_room_status(client, username):
+            return "offline"
+
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+        monkeypatch.setattr(webapp, "fetch_room_status", fake_fetch_room_status)
+
+        result = await webapp.refresh_all_tracked(FakeRequest())
+
+        assert result == {"status": "refreshed", "count": 2}
+        assert set(checked) == {("alice", "offline"), ("bob", "offline")}
+
+    asyncio.run(scenario())
+
+
+# ─── Bounded in-memory caches ───────────────────────────────
+
+
+def test_prune_duration_cache_drops_stale_entries():
+    webapp._duration_cache.clear()
+    webapp._duration_cache.update({"gone.mp4": 1.0, "still_here.mp4": 2.0})
+
+    webapp._prune_duration_cache({"still_here.mp4"})
+
+    assert webapp._duration_cache == {"still_here.mp4": 2.0}
+
+
+def test_prune_thumb_cache_drops_untracked_usernames():
+    webapp._thumb_cache.clear()
+    webapp._thumb_cache.update(
+        {"alice": (0.0, b"a", "image/jpeg"), "bob": (0.0, b"b", "image/jpeg")}
+    )
+
+    webapp._prune_thumb_cache({"alice"})
+
+    assert set(webapp._thumb_cache) == {"alice"}
+
+
+def test_delete_tracked_prunes_thumb_cache(monkeypatch):
+    async def scenario():
+        class FakeRequest:
+            headers = {"origin": "http://localhost:8000"}
+
+        class FakeTracker:
+            async def delete(self, username):
+                return True
+
+        webapp._thumb_cache["alice"] = (0.0, b"a", "image/jpeg")
+        monkeypatch.setattr(webapp, "tracker", FakeTracker())
+
+        result = await webapp.delete_tracked(FakeRequest(), "alice")
+
+        assert result == {"status": "deleted", "username": "alice"}
+        assert "alice" not in webapp._thumb_cache
+
+    asyncio.run(scenario())

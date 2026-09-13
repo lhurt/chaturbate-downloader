@@ -148,6 +148,7 @@ Then open [http://localhost:8000](http://localhost:8000).
 | `CONTACT_SHEET_COLUMNS` | `10`            | Number of tiles per row in the contact sheet grid |
 | `CONTACT_SHEET_AUTO_GENERATE` | `false`  | Generate contact sheets automatically for every completed download, including backfilling existing files that don't have one yet, instead of only on first view |
 | `MODAL_WIDTH_PERCENT` | `80`            | Width of the contact sheet / video player modal dialogs, as a percentage of page width (clamped to 20-100) |
+| `AUTO_DOWNLOAD_MAX_CONCURRENT` | `4`     | Max number of auto-record downloads the background scheduler may run at once |
 
 Example:
 
@@ -167,6 +168,15 @@ With Docker Compose, put the same value in `.env`:
 ```env
 CB_PROXY_URL=http://user:pass@proxy.example:8080
 ```
+
+### Compose files in this repo
+
+| File | Purpose |
+| ---- | ------- |
+| `docker-compose.example.yml` | Template for a local build (`build: .`). Copy it to `docker-compose.yaml` and adjust volumes/env for your setup. |
+| `docker-compose.yaml` | The maintainer's own local-build compose file. Tracked in git as a working example; feel free to overwrite it for your own use. |
+| `docker-compose.hub.yml` | Runs the published Docker Hub image instead of building locally — see below. |
+| `compose.override.yaml` | Optional, gitignored, host-specific overrides (e.g. extra volumes) merged automatically by `docker compose` when present. Not required. |
 
 ### Running with Docker Compose from Docker Hub
 
@@ -269,7 +279,10 @@ All endpoints are under the FastAPI app at `/`.
 | ------ | ---------------------------- | ----------------------------------------- |
 | GET    | `/api/downloads/list`             | List completed `.mp4` files in `downloads/` |
 | GET    | `/api/downloads/file/{filename}`  | Stream one exact completed file by filename |
-| DELETE | `/api/downloads/{filename}`       | Delete a completed file (path-traversal safe) |
+| DELETE | `/api/downloads/{filename}`       | Delete a completed file and its contact sheet (path-traversal safe) |
+| GET    | `/api/downloads/contact-sheet/{filename}` | Get (generating and caching on first request) a file's contact sheet |
+| POST   | `/api/downloads/contact-sheets/generate-all` | Backfill contact sheets for every completed file that doesn't have one yet |
+| POST   | `/api/downloads/cleanup-orphans`  | Remove leftover `_video.mp4`/`_audio.mp4` temp tracks from downloads that never finalized, and contact sheets whose source recording is gone (also runs once automatically at startup) |
 
 ### Tracked Streamers
 
@@ -279,6 +292,8 @@ All endpoints are under the FastAPI app at `/`.
 | POST   | `/api/tracked?username=...`        | Track a username directly, without starting a download (409 if already tracked) |
 | PATCH  | `/api/tracked/{username}/auto-download` | Enable or disable automatic recording with the `enabled` query parameter |
 | DELETE | `/api/tracked/{username}`          | Remove a username from the tracked registry    |
+| POST   | `/api/tracked/{username}/refresh`  | Re-check one streamer's live status immediately instead of waiting for the next background poll |
+| POST   | `/api/tracked/refresh-all`         | Re-check every tracked streamer's live status immediately (same check the background poller runs every 60s) |
 | GET    | `/api/thumbnail/{username}`        | Fetch the current room thumbnail (cached for 30 seconds) |
 
 ### Debug
@@ -342,6 +357,16 @@ chaturbate/
 - **Graceful stop.** `stop_download` sets an event instead of cancelling
   the task, so the current segment batch finishes and the mux runs before
   the task exits. There's a 120 s watchdog if the task hangs.
+- **Orphaned artifact cleanup.** If the watchdog above has to force-cancel a
+  task, or the process exits ungracefully (crash, `docker kill`), the
+  `_video.mp4`/`_audio.mp4` temp tracks for that download never get muxed or
+  renamed and are left on disk. Likewise, a contact sheet's source `.mp4` can
+  disappear by means other than the app's own delete button — a manual `rm`,
+  or an external tool watching `downloads/` (e.g. a NAS scanner or
+  jDownloader, as in the `compose.override.yaml` example) — leaving the
+  `_contactsheet.jpg` behind with nothing to show it. The server sweeps and
+  removes both kinds of orphan once at startup, and the same sweep can be run
+  at any time via `POST /api/downloads/cleanup-orphans`.
 - **Tracked streamer data** lives in `downloads/tracked.db` (or the
   directory pointed to by `DOWNLOADS_DIR`). It stores usernames, download
   counts, last-seen timestamps, and the most recent room status captured by
