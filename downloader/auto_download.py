@@ -41,7 +41,6 @@ class AutoDownloadScheduler:
 
             result = await self._manager.start_download(
                 username=username,
-                output_format="mp4",
                 max_duration=None,
             )
             if result.get("status") == "started":

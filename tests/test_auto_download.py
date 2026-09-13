@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as webapp
+import downloader.manager as manager_module
 from downloader.auto_download import AutoDownloadScheduler
+from downloader.manager import DownloadManager
 from downloader.tracker import Tracker
 
 
@@ -25,6 +27,38 @@ def test_tracker_persists_auto_download_preference(tmp_path):
 
         assert updated is True
         assert rows[0]["auto_download"] is True
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_calls_real_manager_with_a_compatible_signature(tmp_path, monkeypatch):
+    """Regression test: the scheduler used to pass `output_format` to
+    DownloadManager.start_download after that parameter was dropped as dead
+    weight, which raised a TypeError in production every time an auto-record
+    was triggered -- FakeManager doubles elsewhere in this suite accept
+    **kwargs and can't catch a signature mismatch like that, so this uses the
+    real DownloadManager instead."""
+
+    async def fake_extract_hls_url(username):
+        return None  # room offline: DownloadManager.start_download returns an error dict
+
+    async def scenario():
+        monkeypatch.setattr(manager_module, "extract_hls_url", fake_extract_hls_url)
+
+        class FakeTracker:
+            async def is_auto_download_enabled(self, username):
+                return True
+
+            async def upsert_download(self, username):
+                pass
+
+        manager = DownloadManager(output_dir=tmp_path)
+        scheduler = AutoDownloadScheduler(manager, FakeTracker())
+        scheduler.schedule("alice")
+        task = scheduler._tasks["alice"]
+        await task
+
+        assert task.exception() is None
 
     asyncio.run(scenario())
 
