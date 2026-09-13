@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/app/.cache/uv
 
 WORKDIR /app
 
@@ -22,7 +23,8 @@ COPY routers ./routers
 COPY static ./static
 COPY templates ./templates
 
-RUN mkdir -p /app/downloads
+RUN mkdir -p /app/downloads /app/.cache/uv \
+    && chmod -R 777 /app/.cache
 
 EXPOSE 8000
 
