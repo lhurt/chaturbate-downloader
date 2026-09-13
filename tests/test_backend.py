@@ -1068,6 +1068,89 @@ def test_stop_all_during_start_clears_pending_stop_event(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_stop_download_returns_error_when_nothing_is_active(tmp_path):
+    async def scenario():
+        manager = DownloadManager(output_dir=tmp_path)
+        return await manager.stop_download("alice")
+
+    assert asyncio.run(scenario()) == {"error": "No active download for alice"}
+
+
+def test_stop_download_waits_for_the_running_task_to_finish(monkeypatch, tmp_path):
+    async def scenario():
+        import downloader.manager as manager_module
+
+        async def fake_extract_hls_url(username):
+            return "https://example.invalid/stream.m3u8?token=secret"
+
+        class FakeDownloader:
+            def __init__(self):
+                self.stopped = asyncio.Event()
+
+            async def download_stream(self, username, hls_url, max_duration=None):
+                await self.stopped.wait()
+                return DownloadProgress(username=username, status="done", output_path="/tmp/x.mp4")
+
+            def stop(self, username):
+                self.stopped.set()
+
+        monkeypatch.setattr(manager_module, "extract_hls_url", fake_extract_hls_url)
+        manager = DownloadManager(output_dir=tmp_path)
+        # _get_downloader must return the same instance every call (as the
+        # real DownloadManager does): start_download's task awaits this
+        # instance's event, and stop_download signals it via the same one.
+        fake_downloader = FakeDownloader()
+        monkeypatch.setattr(manager, "_get_downloader", lambda: fake_downloader)
+
+        await manager.start_download("alice")
+        # Let start_download's task actually get registered before stopping.
+        await asyncio.sleep(0)
+
+        result = await manager.stop_download("alice")
+
+        assert result == {"status": "stopped", "username": "alice"}
+        assert "alice" not in manager._tasks
+
+    asyncio.run(scenario())
+
+
+def test_stop_all_waits_for_running_tasks_to_finish(monkeypatch, tmp_path):
+    async def scenario():
+        import downloader.manager as manager_module
+
+        async def fake_extract_hls_url(username):
+            return "https://example.invalid/stream.m3u8?token=secret"
+
+        class FakeDownloader:
+            def __init__(self):
+                self.stopped = asyncio.Event()
+
+            async def download_stream(self, username, hls_url, max_duration=None):
+                await self.stopped.wait()
+                return DownloadProgress(username=username, status="done", output_path="/tmp/x.mp4")
+
+            def stop(self, username):
+                pass
+
+            def stop_all(self):
+                self.stopped.set()
+
+        monkeypatch.setattr(manager_module, "extract_hls_url", fake_extract_hls_url)
+        manager = DownloadManager(output_dir=tmp_path)
+        fake_downloader = FakeDownloader()
+        monkeypatch.setattr(manager, "_get_downloader", lambda: fake_downloader)
+
+        await manager.start_download("alice")
+        await asyncio.sleep(0)
+
+        result = await manager.stop_all()
+
+        assert result == {"status": "all_stopped"}
+        assert "alice" not in manager._tasks
+
+    asyncio.run(scenario())
+
+
 def test_stopped_start_cannot_claim_newer_start_reservation(monkeypatch, tmp_path):
     async def scenario():
         import downloader.manager as manager_module
