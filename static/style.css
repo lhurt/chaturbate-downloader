@@ -1011,6 +1011,8 @@ body {
 
 .file-row__actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   flex: 0 0 auto;
 }
@@ -1090,6 +1092,18 @@ body {
   .main-columns .stat__value {
     font-size: 14px;
   }
+
+  /* Completed downloads in narrow right column: the actions column would
+     otherwise claim most of the row's width and squeeze the filename/details
+     column to nothing, so stack info above actions instead of side-by-side. */
+  .main-columns .file-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .main-columns .file-row__actions {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1123,6 +1137,14 @@ body {
   }
 }
 
-.main-columns > .section {
+.main-columns > .section,
+.main-columns > .main-columns__col {
+  min-width: 0;
+}
+
+.main-columns__col {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
   min-width: 0;
 }

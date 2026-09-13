@@ -159,35 +159,37 @@
         </div>
       </section>
 
-      <section class="section">
-        <div class="section__header">
-          <span class="live-dot" id="active-dot"></span>
-          <h2 class="section__title">Active Downloads</h2>
-          <span class="section__count" id="active-count">0</span>
-          <button type="button" class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
-        </div>
-        <div id="active-downloads" class="downloads-grid">
-          <div class="empty-state" id="active-empty">
-            <strong>[READY]</strong>
-            <span>Start with a username above. Live recordings show status and activity while capture or conversion is running.</span>
+      <div class="main-columns__col">
+        <section class="section">
+          <div class="section__header">
+            <span class="live-dot" id="active-dot"></span>
+            <h2 class="section__title">Active Downloads</h2>
+            <span class="section__count" id="active-count">0</span>
+            <button type="button" class="btn btn--secondary btn--sm section__action" id="btn-stop-all" hidden>Stop All</button>
           </div>
-        </div>
-      </section>
-    </div>
+          <div id="active-downloads" class="downloads-grid">
+            <div class="empty-state" id="active-empty">
+              <strong>[READY]</strong>
+              <span>Start with a username above. Live recordings show status and activity while capture or conversion is running.</span>
+            </div>
+          </div>
+        </section>
 
-    <section class="section">
-      <div class="section__header">
-        <h2 class="section__title">Completed Downloads</h2>
-        <span class="section__count" id="completed-count">0</span>
-        <button type="button" class="btn btn--ghost btn--sm section__action" id="btn-generate-all-sheets">Generate all contact sheets</button>
+        <section class="section">
+          <div class="section__header">
+            <h2 class="section__title">Completed Downloads</h2>
+            <span class="section__count" id="completed-count">0</span>
+            <button type="button" class="btn btn--ghost btn--sm section__action" id="btn-generate-all-sheets">Generate all contact sheets</button>
+          </div>
+          <div id="completed-downloads" class="downloads-list">
+            <div class="empty-state" id="completed-empty">
+              <strong>[LOCAL LIBRARY EMPTY]</strong>
+              <span>Finished MP4 files will appear here and are saved locally in this app’s downloads folder.</span>
+            </div>
+          </div>
+        </section>
       </div>
-      <div id="completed-downloads" class="downloads-list">
-        <div class="empty-state" id="completed-empty">
-          <strong>[LOCAL LIBRARY EMPTY]</strong>
-          <span>Finished MP4 files will appear here and are saved locally in this app’s downloads folder.</span>
-        </div>
-      </div>
-    </section>
+    </div>
 
     <footer class="footer">
       CB Stream Saver &mdash; Local &amp; personal use
