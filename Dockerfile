@@ -18,6 +18,7 @@ RUN uv sync --frozen --no-dev
 
 COPY app.py ./
 COPY downloader ./downloader
+COPY routers ./routers
 COPY static ./static
 COPY templates ./templates
 

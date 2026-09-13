@@ -14,11 +14,12 @@ Strategies:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import uuid
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -31,6 +32,33 @@ BASE_DOMAIN = "https://chaturbate.com"
 ROOM_URL = f"{BASE_DOMAIN}/{{username}}/"
 CHATVIDEO_API = f"{BASE_DOMAIN}/api/chatvideocontext/{{username}}/"
 EDGE_HLS_API = f"{BASE_DOMAIN}/get_edge_hls_url_ajax/"
+
+STATUS_MAX_RETRIES = 2
+STATUS_RETRY_BACKOFF_SECONDS = 2.0
+
+
+async def _request_with_429_retry(
+    request_fn: Callable[[], Awaitable[httpx.Response]],
+) -> httpx.Response:
+    """Call `request_fn`, retrying with backoff if Chaturbate responds 429.
+
+    Honors a numeric Retry-After header when present, otherwise doubles
+    STATUS_RETRY_BACKOFF_SECONDS each attempt.
+    """
+    delay = STATUS_RETRY_BACKOFF_SECONDS
+    for attempt in range(STATUS_MAX_RETRIES + 1):
+        resp = await request_fn()
+        if resp.status_code != 429 or attempt == STATUS_MAX_RETRIES:
+            return resp
+        retry_after = resp.headers.get("retry-after")
+        wait = (
+            float(retry_after)
+            if retry_after and retry_after.replace(".", "", 1).isdigit()
+            else delay
+        )
+        await asyncio.sleep(wait)
+        delay *= 2
+    return resp
 
 
 async def fetch_room_status(
@@ -50,7 +78,9 @@ async def fetch_room_status(
     is currently blocked.
     """
     try:
-        resp = await client.get(CHATVIDEO_API.format(username=username))
+        resp = await _request_with_429_retry(
+            lambda: client.get(CHATVIDEO_API.format(username=username))
+        )
         if resp.status_code == 404:
             return "deleted"
         if resp.status_code == 200:
@@ -72,8 +102,10 @@ async def _fetch_room_status_edge_ajax(
     """Status fallback via get_edge_hls_url_ajax (see fetch_room_status)."""
     headers, cookies, data = _build_edge_ajax_request(username)
     try:
-        resp = await client.post(
-            EDGE_HLS_API, content=data, headers=headers, cookies=cookies
+        resp = await _request_with_429_retry(
+            lambda: client.post(
+                EDGE_HLS_API, content=data, headers=headers, cookies=cookies
+            )
         )
         if resp.status_code != 200:
             return None

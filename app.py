@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional
@@ -30,6 +31,12 @@ from downloader.http_client import proxy_kwargs
 # copy directly from downloader.redact).
 from downloader.redact import _redact_text_urls, _redact_url
 from downloader.tracker import Tracker
+
+# When run directly (`python app.py`), this module loads as "__main__", but
+# routers/*.py do `import app` to reach app-owned state. Alias "app" to the
+# already-executing module so that import resolves here instead of
+# re-executing this file as a second, separate module (circular import).
+sys.modules.setdefault("app", sys.modules[__name__])
 
 # Configure logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -55,6 +62,7 @@ auto_download_scheduler = AutoDownloadScheduler(
 )
 
 POLL_INTERVAL_SECONDS = 60
+STATUS_POLL_DELAY_SECONDS = float(os.getenv("STATUS_POLL_DELAY_SECONDS", "1.0"))
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
 COMPLETED_STEM_RE = re.compile(
@@ -155,7 +163,9 @@ async def _refresh_all_tracked_status() -> int:
     usernames = await tracker.list_usernames()
     if usernames:
         async with _status_client() as client:
-            for username in usernames:
+            for i, username in enumerate(usernames):
+                if i:
+                    await asyncio.sleep(STATUS_POLL_DELAY_SECONDS)
                 try:
                     await _check_tracked_status(client, username)
                 except Exception as exc:
