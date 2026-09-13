@@ -10,3 +10,5 @@ __pycache__
 downloads
 dist
 *.egg-info
+docker-compose.*
+compose.*
